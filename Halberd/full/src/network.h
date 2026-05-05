@@ -37,7 +37,7 @@ extern uint32_t hbInterval;
 extern bool vibrationEnabled;
 
 #ifndef AP_SSID
-#define AP_SSID "Antihunter"
+#define AP_SSID "Halberd"
 #endif
 #ifndef AP_PASS  
 #define AP_PASS "antihunt3r123"

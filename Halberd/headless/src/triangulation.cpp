@@ -607,8 +607,8 @@ void startTriangulation(const String &targetMac, int duration) {
     }
     
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults.clear();
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults.clear();
     }
 
     {
@@ -919,9 +919,9 @@ void stopTriangulation() {
     Serial.printf("[TRIANGULATE] Results preview: %.100s...\n", results.c_str());
 
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = results.c_str();
-        Serial.printf("[TRIANGULATE] Final results stored in lastResults (%d chars)\n", antihunter::lastResults.length());
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = results.c_str();
+        Serial.printf("[TRIANGULATE] Final results stored in lastResults (%d chars)\n", halberd::lastResults.length());
     }
     
     if (sdAvailable) {

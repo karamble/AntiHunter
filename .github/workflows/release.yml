@@ -43,29 +43,29 @@ jobs:
     - name: Prepare release artifacts
       run: |
         mkdir -p release
-        cp .pio/build/AntiHunter-full/firmware.bin release/antihunter-full-${{ steps.get_version.outputs.version }}.bin
-        cp .pio/build/AntiHunter-headless/firmware.bin release/antihunter-headless-${{ steps.get_version.outputs.version }}.bin
+        cp .pio/build/halberd-full/firmware.bin release/halberd-full-${{ steps.get_version.outputs.version }}.bin
+        cp .pio/build/halberd-headless/firmware.bin release/halberd-headless-${{ steps.get_version.outputs.version }}.bin
         cp Dist/bootloader.bin release/
         cp Dist/partitions.bin release/
-        cp Dist/flashAntihunter.sh release/
+        cp Dist/flashHalberd.sh release/
 
     - name: Generate checksums
       run: |
         cd release
-        sha256sum *.bin flashAntihunter.sh > SHA256SUMS.txt
+        sha256sum *.bin flashHalberd.sh > SHA256SUMS.txt
 
     - name: Update Dist bins and web flasher manifests
       run: |
         VERSION=${{ steps.get_version.outputs.version }}
-        RAW="https://raw.githubusercontent.com/lukeswitz/AntiHunter/main/Dist"
+        RAW="https://raw.githubusercontent.com/karamble/halberd/main/Dist"
 
-        cp .pio/build/AntiHunter-full/firmware.bin "Dist/antihunter-full-${VERSION}.bin"
-        cp .pio/build/AntiHunter-headless/firmware.bin "Dist/antihunter-headless-${VERSION}.bin"
+        cp .pio/build/halberd-full/firmware.bin "Dist/halberd-full-${VERSION}.bin"
+        cp .pio/build/halberd-headless/firmware.bin "Dist/halberd-headless-${VERSION}.bin"
 
         for VARIANT in full headless; do
           cat > "docs/flasher/manifest-${VARIANT}.json" <<EOF
         {
-          "name": "AntiHunter $(echo ${VARIANT} | sed 's/^./\U&/') (${VERSION})",
+          "name": "Halberd $(echo ${VARIANT} | sed 's/^./\U&/') (${VERSION})",
           "new_install_prompt_erase": true,
           "builds": [
             {
@@ -73,7 +73,7 @@ jobs:
               "parts": [
                 { "path": "${RAW}/bootloader.bin", "offset": 0 },
                 { "path": "${RAW}/partitions.bin", "offset": 32768 },
-                { "path": "${RAW}/antihunter-${VARIANT}-${VERSION}.bin", "offset": 65536 }
+                { "path": "${RAW}/halberd-${VARIANT}-${VERSION}.bin", "offset": 65536 }
               ]
             }
           ]

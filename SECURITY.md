@@ -1,6 +1,6 @@
 # Security Policy
 
-AntiHunter DIGI node firmware is currently in **beta** and has not completed formal security testing. The device operates as a standalone WiFi access point without internet connectivity. We welcome responsible disclosure of security vulnerabilities.
+Halberd node firmware is currently in **beta** and has not completed formal security testing. The device operates as a standalone WiFi access point without internet connectivity. We welcome responsible disclosure of security vulnerabilities.
 
 ## Supported Versions
 
@@ -12,7 +12,7 @@ AntiHunter DIGI node firmware is currently in **beta** and has not completed for
 
 ## Reporting a Vulnerability
 
-1. **Open a private advisory** at the repository's [Security Advisories](https://github.com/lukeswitz/Antihunter/security/advisories) page or message `@lukeswitz` with subject `AHFW SECURITY REPORT`.
+1. **Open a private advisory** at the repository's [Security Advisories](https://github.com/karamble/halberd/security/advisories) page or message `@karamble` with subject `HALBERD SECURITY REPORT`.
 2. Include: vulnerability description, impact assessment, reproduction steps, commit hash/version tested, hardware configuration.
 3. For encrypted communication, request PGP key via GitHub message.
 4. Response timeline: acknowledgment within **3 business days**, triage within **7 business days**.
@@ -92,4 +92,4 @@ We acknowledge security researchers who responsibly disclose issues, subject to 
 - For operational questions, consult firmware documentation first.
 - For incidents involving deployed devices, also notify your organization's security contacts - this is open-source firmware and you remain responsible for your device security posture.
 
-Thank you for helping keep AntiHunter firmware secure for all users.
+Thank you for helping keep Halberd firmware secure for all users.
