@@ -1,10 +1,15 @@
+> [!IMPORTANT]
+> **Heads up — this fork is being renamed to `Halberd`.**
+>
+> `karamble/AntiHunter` is the MIT-pinned fork of [`lukeswitz/AntiHunter`](https://github.com/lukeswitz/AntiHunter), frozen at the [`v-last-mit`](https://github.com/karamble/AntiHunter/releases/tag/v-last-mit) tag (commit `4680ea2`). Upstream relicensed to **AGPL-3.0-only** on 2026-04-30 ([commit `ce87a9c`](https://github.com/lukeswitz/AntiHunter/commit/ce87a9c)); this fork continues under MIT and pulls no AGPL-era commits.
+>
+> Active development is moving to **`karamble/halberd`** with a coordinated rebrand: source-tree directory rename, `CONFIG_NODEID` prefix migration `AH<n>` → `HB<n>` (legacy `AH<n>` continues to work for already-deployed sensors), case STL respin, full MIT-clean `v1.0.0` release. The repo here will redirect once renamed; existing clones, tags (`v-last-mit`, `v0.9.x`), and binaries remain available.
+
 <div align="center">
 
-[![Code Quality](https://github.com/lukeswitz/AntiHunter/actions/workflows/lint.yml/badge.svg)](https://github.com/lukeswitz/AntiHunter/actions/workflows/lint.yml)
-[![PlatformIO CI](https://github.com/lukeswitz/AntiHunter/actions/workflows/platformio.yml/badge.svg)](https://github.com/lukeswitz/AntiHunter/actions/workflows/platformio.yml)
-[![CodeQL](https://github.com/lukeswitz/AntiHunter/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/lukeswitz/AntiHunter/actions/workflows/github-code-scanning/codeql)
-[![Pre-release](https://img.shields.io/github/v/release/lukeswitz/AntiHunter?include_prereleases&label=pre-release&color=orange)](https://github.com/lukeswitz/AntiHunter/releases)
-[![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/lukeswitz/AntiHunter)](https://github.com/lukeswitz/AntiHunter/tree/main/Antihunter/src)
+[![PlatformIO CI](https://github.com/karamble/AntiHunter/actions/workflows/platformio.yml/badge.svg)](https://github.com/karamble/AntiHunter/actions/workflows/platformio.yml)
+[![Pre-release](https://img.shields.io/github/v/release/karamble/AntiHunter?include_prereleases&label=pre-release&color=orange)](https://github.com/karamble/AntiHunter/releases)
+[![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/karamble/AntiHunter)](https://github.com/karamble/AntiHunter/tree/main/Antihunter)
 </div>
 
 
