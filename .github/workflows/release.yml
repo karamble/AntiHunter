@@ -59,6 +59,8 @@ jobs:
         VERSION=${{ steps.get_version.outputs.version }}
         RAW="https://raw.githubusercontent.com/karamble/halberd/main/Dist"
 
+        mkdir -p Dist docs/flasher
+
         cp .pio/build/halberd-full/firmware.bin "Dist/halberd-full-${VERSION}.bin"
         cp .pio/build/halberd-headless/firmware.bin "Dist/halberd-headless-${VERSION}.bin"
 
