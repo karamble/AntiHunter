@@ -734,8 +734,10 @@ void linkSessionToTrackBehavioral(ProbeSession& session) {
         
         if (now - identity.lastSeen > TRACK_STALE_TIME) continue;
         
+        // identity.macs is std::vector<MacAddress>; spell the type so GCC
+        // 8.4.0 in the PIO CI image can deduce the lambda argument.
         bool alreadyLinked = std::any_of(identity.macs.begin(), identity.macs.end(),
-            [&session](const auto& existingMac) {
+            [&session](const MacAddress& existingMac) {
                 return memcmp(existingMac.bytes.data(), session.mac, 6) == 0;
             });
         if (alreadyLinked) continue;
