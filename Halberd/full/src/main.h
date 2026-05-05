@@ -2,7 +2,7 @@
 #include <mutex>
 #include <string>
 
-namespace antihunter {
+namespace halberd {
     extern std::string lastResults;
     extern std::mutex lastResultsMutex;
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AntiHunter Web Flasher & Configurator</title>
+  <title>Halberd Web Flasher & Configurator</title>
   <script
     type="module"
     src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
@@ -151,7 +151,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>AntiHunter Flasher & Configurator</h1>
+    <h1>Halberd Flasher & Configurator</h1>
     <div class="header-right">
       <div id="versionBadge" class="version-badge" style="display:none">
         <span class="dot"></span>
@@ -210,7 +210,7 @@
       </div>
 
       <div id="fullNote" class="banner ok">
-        After flashing, join the <strong>Antihunter</strong> WiFi network
+        After flashing, join the <strong>Halberd</strong> WiFi network
         (password: <strong>antihunt3r123</strong>) and open
         <strong>http://192.168.4.1</strong> to configure.
       </div>
@@ -406,7 +406,7 @@
           <div class="cfg-grid">
             <div>
               <label>AP SSID</label>
-              <input type="text" id="cfgApSsid" placeholder="Antihunter" maxlength="32">
+              <input type="text" id="cfgApSsid" placeholder="Halberd" maxlength="32">
             </div>
             <div>
               <label>AP Password</label>
@@ -442,12 +442,12 @@
       <p style="font-size:13px;color:var(--mut);margin-bottom:12px">
         If Web Serial is unavailable, use the shell script:
       </p>
-      <pre>curl -fLO https://github.com/lukeswitz/AntiHunter/raw/main/Dist/flashAntihunter.sh
-chmod +x flashAntihunter.sh
-./flashAntihunter.sh</pre>
+      <pre>curl -fLO https://github.com/karamble/halberd/raw/main/Dist/flashHalberd.sh
+chmod +x flashHalberd.sh
+./flashHalberd.sh</pre>
       <div style="margin-top:12px">
         <a class="btn" id="releaseLink"
-          href="https://github.com/lukeswitz/AntiHunter/releases/latest"
+          href="https://github.com/karamble/halberd/releases/latest"
           target="_blank" rel="noopener">
           View Release on GitHub
         </a>
@@ -455,13 +455,13 @@ chmod +x flashAntihunter.sh
     </div>
 
     <div class="footer">
-      <a href="https://github.com/lukeswitz/AntiHunter" target="_blank" rel="noopener">AntiHunter</a>
+      <a href="https://github.com/karamble/halberd" target="_blank" rel="noopener">Halberd</a>
       &mdash; ESP32-S3 Counter-Surveillance Mesh
     </div>
   </div>
 
   <script>
-    const REPO = 'lukeswitz/AntiHunter';
+    const REPO = 'karamble/halberd';
     const FALLBACK_VERSION = 'v0.9.4';
     const BAUD = 115200;
 
@@ -485,8 +485,8 @@ chmod +x flashAntihunter.sh
       const ver = latestVersion || FALLBACK_VERSION;
       const variant = selectedFirmware === 'full' ? 'full' : 'headless';
       const name = selectedFirmware === 'full'
-        ? 'AntiHunter Full (WiFi AP + WebUI)'
-        : 'AntiHunter Headless (Mesh Only)';
+        ? 'Halberd Full (WiFi AP + WebUI)'
+        : 'Halberd Headless (Mesh Only)';
       const base = `https://raw.githubusercontent.com/${REPO}/main/Dist`;
       const manifest = {
         name,
@@ -496,7 +496,7 @@ chmod +x flashAntihunter.sh
           parts: [
             { path: `${base}/bootloader.bin`, offset: 0 },
             { path: `${base}/partitions.bin`, offset: 32768 },
-            { path: `${base}/antihunter-${variant}-${ver}.bin`, offset: 65536 }
+            { path: `${base}/halberd-${variant}-${ver}.bin`, offset: 65536 }
           ]
         }]
       };

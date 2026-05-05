@@ -1,18 +1,18 @@
-# Contributing to AntiHunter
+# Contributing to Halberd
 
-Thank you for your interest in contributing to AntiHunter. **Use the provided templates [here](https://github.com/lukeswitz/AntiHunter/issues/new/choose) to get started.**
+Thank you for your interest in contributing to Halberd. **Use the provided templates [here](https://github.com/karamble/halberd/issues/new/choose) to get started.**
 
 ## Development Setup
 
 ### Prerequisites
 - PlatformIO IDE or PlatformIO Core
 - ESP32 toolchain
-- Supported [hardware](https://github.com/lukeswitz/AntiHunter?tab=readme-ov-file#hardware-requirements) 
+- Supported [hardware](https://github.com/karamble/halberd?tab=readme-ov-file#hardware-requirements) 
 
 ### Building from Source
 ```bash
-git clone https://github.com/lukeswitz/AntiHunter.git
-cd AntiHunter
+git clone https://github.com/karamble/halberd.git
+cd halberd
 pio run
 ```
 
