@@ -539,8 +539,12 @@ void baselineDetectionTask(void *pv) {
             cleanupBaselineMemory();
             lastCleanup = millis();
 
+            // Spell the std::map iterator's value_type out so the older
+            // ESP-IDF GCC 8.4.0 toolchain in the PIO CI image can deduce
+            // the lambda argument type without falling back to `int`.
+            using BaselineEntry = std::pair<const String, BaselineDevice>;
             uint32_t dirtyCount = std::count_if(baselineCache.begin(), baselineCache.end(),
-                [](const auto& entry) { return entry.second.dirtyFlag; });
+                [](const BaselineEntry& entry) { return entry.second.dirtyFlag; });
 
             if ((millis() - lastSDFlush > MIN_FLUSH_INTERVAL && dirtyCount > 0) || dirtyCount >= MIN_DIRTY_COUNT) {
                 flushBaselineCacheToSD();
@@ -778,8 +782,12 @@ void baselineDetectionTask(void *pv) {
             cleanupBaselineMemory();
             lastCleanup = millis();
 
+            // Spell the std::map iterator's value_type out so the older
+            // ESP-IDF GCC 8.4.0 toolchain in the PIO CI image can deduce
+            // the lambda argument type without falling back to `int`.
+            using BaselineEntry = std::pair<const String, BaselineDevice>;
             uint32_t dirtyCount = std::count_if(baselineCache.begin(), baselineCache.end(),
-                [](const auto& entry) { return entry.second.dirtyFlag; });
+                [](const BaselineEntry& entry) { return entry.second.dirtyFlag; });
 
             if ((millis() - lastSDFlush > MIN_FLUSH_INTERVAL && dirtyCount > 0) || dirtyCount >= MIN_DIRTY_COUNT) {
                 flushBaselineCacheToSD();

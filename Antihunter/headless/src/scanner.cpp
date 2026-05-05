@@ -2903,8 +2903,13 @@ String getProbeResults()
 
     std::vector<std::pair<String, ProbeDevice*>> sorted;
     sorted.reserve(probeDevices.size());
+    // Older ESP-IDF GCC 8.4.0 (PIO CI image) cannot deduce `auto&` against
+    // a std::map<String, ProbeDevice>::iterator, so name the value_type.
+    using ProbeMapEntry = std::pair<const String, ProbeDevice>;
     std::transform(probeDevices.begin(), probeDevices.end(), std::back_inserter(sorted),
-        [](auto &p) -> std::pair<String, ProbeDevice*> { return {p.first, &p.second}; });
+        [](ProbeMapEntry &p) -> std::pair<String, ProbeDevice*> {
+            return {p.first, &p.second};
+        });
     std::sort(sorted.begin(), sorted.end(),
         [](const std::pair<String, ProbeDevice*> &a, const std::pair<String, ProbeDevice*> &b) {
         if (a.second->histKnown != b.second->histKnown) return a.second->histKnown;
@@ -3950,8 +3955,11 @@ void listScanTask(void *pv) {
     } else {
         std::vector<Hit> sortedHits;
         sortedHits.reserve(hitsMap.size());
+        // GCC 8.4.0 lambda template-arg deduction workaround — see the
+        // matching note in getProbeResults() above.
+        using HitMapEntry = std::pair<const String, Hit>;
         std::transform(hitsMap.begin(), hitsMap.end(), std::back_inserter(sortedHits),
-            [](const auto& entry) { return entry.second; });
+            [](const HitMapEntry& entry) { return entry.second; });
         std::sort(sortedHits.begin(), sortedHits.end(),
                   [](const Hit& a, const Hit& b) { return a.rssi > b.rssi; });
 

@@ -3,7 +3,9 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'
+      # Numeric-version tags only (v0.9.4, v1.2.3, …). Marker tags such
+      # as v-last-mit or v-archive must not kick off a release build.
+      - 'v[0-9]*'
 
 jobs:
   release:
