@@ -18,10 +18,12 @@ jobs:
           - AntiHunter-headless
     
     steps:
-    - uses: actions/checkout@v4
-    
+    # Pinned to Node-24-capable majors (per GitHub's Sept 2026 deprecation
+    # of the Node 20 runner). SHAs commented with the corresponding tag.
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
     - name: Cache PlatformIO
-      uses: actions/cache@v4
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
       with:
         path: |
           ~/.platformio
@@ -29,20 +31,20 @@ jobs:
         key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
         restore-keys: |
           ${{ runner.os }}-pio-
-    
+
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
       with:
         python-version: '3.11'
-    
+
     - name: Install PlatformIO
       run: pip install --upgrade platformio
-    
+
     - name: Build ${{ matrix.environment }}
       run: pio run -e ${{ matrix.environment }}
-    
+
     - name: Upload firmware
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: firmware-${{ matrix.environment }}
         path: .pio/build/${{ matrix.environment }}/firmware.bin
