@@ -370,8 +370,8 @@ void baselineDetectionTask(void *pv) {
     bleFramesSeen = 0;
     scanning = true;
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults.clear();
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults.clear();
     }
 
     baselineStats = BaselineStats();

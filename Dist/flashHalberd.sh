@@ -2,10 +2,14 @@
 set -e
 
 ESPTOOL_REPO="https://github.com/alphafox02/esptool"
-FIRMWARE_OPTIONS=(
-    "AntiHunter AP (With WiFi AP) - v0.9.4 Beta :https://github.com/lukeswitz/AntiHunter/raw/refs/heads/main/Dist/antihunter-full-v0.9.4.bin"
-    "AntiHunter Headless - (Mesh only) v0.9.4 Beta:https://github.com/lukeswitz/AntiHunter/raw/refs/heads/main/Dist/antihunter-headless-v0.9.4.bin"
-)
+
+# No prebuilt halberd firmware URLs yet. The first halberd release will
+# publish halberd-full and halberd-headless artifacts via
+# .github/workflows/release.yml. Until then, build locally with `pio run`
+# and pass the resulting firmware.bin via `--file`. Re-populate this array
+# once releases exist, e.g.:
+#   "Halberd Full:https://github.com/karamble/halberd/releases/download/<tag>/halberd-full-<tag>.bin"
+FIRMWARE_OPTIONS=()
 ESPTOOL_DIR="esptool"
 CUSTOM_BIN=""
 CONFIG_MODE=false
@@ -121,12 +125,12 @@ collect_configuration() {
     if [ "$IS_HEADLESS" = false ]; then
         echo ""
         echo "WiFi Access Point Configuration:"
-        read -p "WiFi SSID [default: Antihunter]: " AP_SSID
-        AP_SSID=${AP_SSID:-"Antihunter"}
+        read -p "WiFi SSID [default: Halberd]: " AP_SSID
+        AP_SSID=${AP_SSID:-"Halberd"}
         
         read -p "WiFi Password (min 8 chars, empty for default): " AP_PASS
         if [ -z "$AP_PASS" ]; then
-            AP_PASS="antihunter"
+            AP_PASS="halberd"
         fi
         
         AP_SSID_JSON=",\"apSsid\":\"$AP_SSID\",\"apPass\":\"$AP_PASS\""
@@ -162,7 +166,7 @@ collect_configuration() {
         SETUP_DELAY=60
     fi
     
-    cat > /tmp/antihunter_config.json <<EOF
+    cat > /tmp/halberd_config.json <<EOF
 {"nodeId":"$NODE_ID","scanMode":$SCAN_MODE,"channels":"$CHANNELS","meshInterval":$MESH_INTERVAL,"targets":"$TARGETS","rfPreset":$RF_PRESET,"wifiChannelTime":120,"wifiScanInterval":4000,"bleScanInterval":2000,"bleScanDuration":2000,"baselineRamSize":$BASELINE_RAM,"baselineSdMax":$BASELINE_SD${AP_SSID_JSON},"autoEraseEnabled":$AUTO_ERASE_ENABLED,"autoEraseDelay":$AUTO_ERASE_DELAY,"autoEraseCooldown":$AUTO_ERASE_COOLDOWN,"vibrationsRequired":$VIBRATIONS_REQUIRED,"detectionWindow":$DETECTION_WINDOW,"setupDelay":$SETUP_DELAY}
 EOF
     
@@ -191,9 +195,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -l|--list)
             echo "Available firmware options:"
-            for option in "${FIRMWARE_OPTIONS[@]}"; do
-                echo "  ${option%%:*}"
-            done
+            if [ "${#FIRMWARE_OPTIONS[@]}" -eq 0 ]; then
+                echo "  (none) - no prebuilt halberd releases published yet."
+                echo "  Build locally with 'pio run' and pass --file <path>."
+            else
+                for option in "${FIRMWARE_OPTIONS[@]}"; do
+                    echo "  ${option%%:*}"
+                done
+            fi
             exit 0
             ;;
         *)
@@ -259,6 +268,12 @@ if [ -n "$CUSTOM_BIN" ]; then
         exit 1
     fi
 else
+    if [ "${#FIRMWARE_OPTIONS[@]}" -eq 0 ]; then
+        echo "No prebuilt halberd firmware releases are published yet."
+        echo "Build locally with 'pio run' and re-run with --file .pio/build/<env>/firmware.bin,"
+        echo "or pick the option below to point at any custom .bin."
+        echo ""
+    fi
     declare -a options_array
     for i in "${!FIRMWARE_OPTIONS[@]}"; do
         echo "$((i+1)). ${FIRMWARE_OPTIONS[$i]%%:*}"
@@ -408,7 +423,7 @@ if [ "$CONFIG_MODE" = true ]; then
     echo ""
     echo "Sending configuration to device..."
     
-    CONFIG_JSON_COMPACT=$(cat /tmp/antihunter_config.json | tr -d '\n' | tr -d ' ')
+    CONFIG_JSON_COMPACT=$(cat /tmp/halberd_config.json | tr -d '\n' | tr -d ' ')
     
     $PYTHON_CMD -c "
 import serial
@@ -460,7 +475,7 @@ except Exception as e:
     sys.exit(1)
 " || echo "[CONFIG] Warning: Config send may have failed"
 
-    rm -f /tmp/antihunter_config.json
+    rm -f /tmp/halberd_config.json
     
     echo ""
     echo "Waiting for device reboot..."

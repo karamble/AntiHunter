@@ -263,7 +263,7 @@ void initializeNetwork()
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
   WiFi.softAP(customApSsid.c_str(), customApPass.c_str(), AP_CHANNEL, 0);
   delay(500);
-  WiFi.setHostname("antihunter");
+  WiFi.setHostname("halberd");
   delay(100);
 
   // Configure WiFi to preserve AP during scans
@@ -301,7 +301,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>AntiHunter</title>
+    <title>Halberd</title>
     <style>
       :root{--t:0.2s;--blur:12px}
       [data-theme="light"]{--bg:linear-gradient(135deg,#edf1f6 0%,#e2e8ef 100%);--surf:rgba(255,255,255,0.9);--surf-hover:rgba(255,255,255,0.95);--bord:rgba(0,0,0,0.08);--bord-focus:rgba(72,136,204,0.35);--txt:#1a2030;--mut:#6878a0;--acc:#4080c8;--acch:#3068a8;--accbg:rgba(64,128,200,0.07);--succ:#4080c8;--warn:#a07830;--dang:#a05848;--shad:0 8px 32px rgba(0,0,0,0.06);--shad-hover:0 12px 48px rgba(0,0,0,0.1);--glow:0 0 20px rgba(64,128,200,0.12);--backdrop:blur(12px) saturate(180%);--c-ble:#7882a0;--c-ble-bg:rgba(120,130,160,0.1);--c-wifi:#4080c8;--c-wifi-bg:rgba(64,128,200,0.08);--c-rand:#6878a0;--c-known:#4080c8;--c-away:#a07830;--c-away-bg:rgba(160,120,48,0.07);--c-ap:#4080c8;--c-alert:#a07830;--c-alert-bg:rgba(160,120,48,0.05);--c-ok:#4080c8;--c-err:#a05848;--c-err-bg:rgba(160,88,72,0.05)}
@@ -424,7 +424,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <body>
     <div id="toast"></div>
     <div class="header">
-      <h1>AntiHunter</h1>
+      <h1>Halberd</h1>
       <div class="page-tabs">
         <div class="page-tab-btn active" onclick="switchPage('scan')">Scan</div>
         <div class="page-tab-btn" onclick="switchPage('results')">Results</div>
@@ -797,7 +797,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           </div>
           <div class="card-body collapsed" id="wifiApCardBody" style="max-height:0;">
             <label style="font-size:11px;">SSID</label>
-            <input type="text" id="apSsid" maxlength="32" placeholder="Antihunter" style="margin-bottom:8px;">
+            <input type="text" id="apSsid" maxlength="32" placeholder="Halberd" style="margin-bottom:8px;">
             
             <label style="font-size:11px;">Password</label>
             <input type="password" id="apPass" minlength="8" maxlength="63" placeholder="Min 8 characters" style="margin-bottom:8px;">
@@ -1038,7 +1038,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
       </div>
 
-      <div class="footer">AntiHunter DIGINODE v0.9.4 | Node: <span id="footerNodeId">--</span></div>
+      <div class="footer">Halberd DIGINODE v0.9.4 | Node: <span id="footerNodeId">--</span></div>
     
       <script>
       let tickRunning = false;
@@ -4329,7 +4329,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           cols:['Time','Uptime','Lat','Lon'],
           keys:['t','uptime_ms','lat','lon']},
         baseline:{url:'/baseline/stats',clear:null,fmt:'baseline',cols:[],keys:[]},
-        syslog:{url:'/api/antihunter.log',clear:'/api/antihunter.log/clear',fmt:'text',
+        syslog:{url:'/api/halberd.log',clear:'/api/halberd.log/clear',fmt:'text',
           cols:['Time','Message'],keys:['_time','_msg']}
       };
       function loadDataSet(){
@@ -4496,8 +4496,8 @@ void startWebServer()
              { r->send(200, "text/plain", getTargetsList()); });
 
   server->on("/results", HTTP_GET, [](AsyncWebServerRequest *r) {
-      std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-      String results = antihunter::lastResults.empty() ? "None yet." : String(antihunter::lastResults.c_str());
+      std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+      String results = halberd::lastResults.empty() ? "None yet." : String(halberd::lastResults.c_str());
 
       if (triangulationActive) {
           static String cachedTriResults = "";
@@ -4758,7 +4758,7 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
 
         // Get log file size
         uint32_t logSize = 0;
-        File logFile = SafeSD::open("/antihunter.log", FILE_READ);
+        File logFile = SafeSD::open("/halberd.log", FILE_READ);
         if (logFile) {
             logSize = logFile.size();
             logFile.close();
@@ -5040,7 +5040,7 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
 
   server->on("/mesh-test", HTTP_GET, [](AsyncWebServerRequest *r)
              {
-        char test_msg[] = "Antihunter: Test mesh notification";
+        char test_msg[] = "Halberd: Test mesh notification";
         Serial.printf("[MESH] Test: %s\n", test_msg);
         sendToSerial1(test_msg);
         r->send(200, "text/plain", "Test message sent to mesh"); });
@@ -5230,8 +5230,8 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
                 currentScanMode = (ScanMode)scanMode;
                 scanning = true;
                 {
-                    std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-                    antihunter::lastResults = "MAC Randomization Detection Results\nActive Sessions: 0\nDevice Identities: 0\n\n(Starting...)\n";
+                    std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+                    halberd::lastResults = "MAC Randomization Detection Results\nActive Sessions: 0\nDevice Identities: 0\n\n(Starting...)\n";
                 }
                 xTaskCreatePinnedToCore(randomizationDetectionTask, "randdetect", 8192,
                                     reinterpret_cast<void*>(static_cast<intptr_t>(forever ? 0 : secs)),
@@ -5743,8 +5743,8 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
 
   server->on("/clear-results", HTTP_POST, [](AsyncWebServerRequest *req) {
       {
-          std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-          antihunter::lastResults.clear();
+          std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+          halberd::lastResults.clear();
       }
       req->send(200, "text/plain", "Results cleared");
   });
@@ -5818,16 +5818,16 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
       req->send(200, "text/plain", "Vibration log cleared");
   });
 
-  server->on("/api/antihunter.log", HTTP_GET, [](AsyncWebServerRequest *req) {
-      if (SD.exists("/antihunter.log")) {
-          req->send(SD, "/antihunter.log", "text/plain");
+  server->on("/api/halberd.log", HTTP_GET, [](AsyncWebServerRequest *req) {
+      if (SD.exists("/halberd.log")) {
+          req->send(SD, "/halberd.log", "text/plain");
       } else {
           req->send(404, "text/plain", "No system log file");
       }
   });
 
-  server->on("/api/antihunter.log/clear", HTTP_POST, [](AsyncWebServerRequest *req) {
-      SafeSD::remove("/antihunter.log");
+  server->on("/api/halberd.log/clear", HTTP_POST, [](AsyncWebServerRequest *req) {
+      SafeSD::remove("/halberd.log");
       req->send(200, "text/plain", "System log cleared");
   });
 

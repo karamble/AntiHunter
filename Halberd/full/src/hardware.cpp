@@ -205,10 +205,19 @@ void SafeSD::forceRecheck() {
 
 String sanitizeNodeId(String nodeId) {
     nodeId.toUpperCase();
-    
-    if (!nodeId.startsWith("AH")) {
-        Serial.printf("[SANITIZE] Adding AH prefix to '%s'\n", nodeId.c_str());
-        nodeId = "AH" + nodeId;
+
+    // Halberd produces HB-prefixed node ids. Legacy AntiHunter ids are
+    // converted on first boot of halberd firmware: AH55 becomes HB55 and
+    // gets persisted to NVS, so subsequent boots are no-ops. The
+    // diginode-cc dispatcher accepts both prefixes during the rollout
+    // window, so the unit stays addressable while it converges.
+    if (nodeId.startsWith("AH")) {
+        String suffix = nodeId.substring(2);
+        Serial.printf("[SANITIZE] Migrating legacy '%s' to 'HB%s'\n", nodeId.c_str(), suffix.c_str());
+        nodeId = "HB" + suffix;
+    } else if (!nodeId.startsWith("HB")) {
+        Serial.printf("[SANITIZE] Adding HB prefix to '%s'\n", nodeId.c_str());
+        nodeId = "HB" + nodeId;
     }
     
     String result = nodeId.substring(0, 2);
@@ -265,7 +274,7 @@ void initializeHardware()
         }
     }
     
-    if (!prefs.begin("antihunter", false)) {
+    if (!prefs.begin("halberd", false)) {
         // Single recovery try, then halt
         Serial.println("[NVS] Cannot open namespace - attempting recovery");
         prefs.end();
@@ -276,7 +285,7 @@ void initializeHardware()
             nvs_flash_init();
         }
         
-        if (!prefs.begin("antihunter", false)) {
+        if (!prefs.begin("halberd", false)) {
             // HALT - avoid restart loop
             Serial.println("[NVS] FATAL: Cannot open namespace after recovery");
             while(1) { delay(5000); Serial.println("[NVS] HALTED: Namespace failure"); }
@@ -337,9 +346,23 @@ void initializeHardware()
     {
         int randomNum = random(10, 100);
         char buffer[10];
-        sprintf(buffer, "AH%02d", randomNum);
+        sprintf(buffer, "HB%02d", randomNum);
         nodeId = buffer;
         prefs.putString("nodeId", nodeId);
+    }
+    else
+    {
+        // Run loaded ID through sanitizeNodeId so legacy AH-prefix values
+        // persisted from previous AntiHunter firmware get migrated to HB on
+        // first boot of halberd firmware. Write back if the value changed
+        // so the migration is one-shot per device.
+        String migrated = sanitizeNodeId(nodeId);
+        if (migrated != nodeId)
+        {
+            Serial.printf("[NODE_ID] Migrated NVS-stored '%s' to '%s'\n", nodeId.c_str(), migrated.c_str());
+            prefs.putString("nodeId", migrated);
+            nodeId = migrated;
+        }
     }
     setNodeId(nodeId);
     Serial.println("[NODE_ID] " + nodeId);
@@ -898,7 +921,7 @@ String getDiagnostics() {
 
             // Get log file size
             uint32_t logSize = 0;
-            File logFile = SafeSD::open("/antihunter.log", FILE_READ);
+            File logFile = SafeSD::open("/halberd.log", FILE_READ);
             if (logFile) {
                 logSize = logFile.size();
                 logFile.close();
@@ -1140,9 +1163,9 @@ void logToSD(const String &data) {
         if (logFile) {
             logFile.close();
         }
-        logFile = SafeSD::open("/antihunter.log", FILE_APPEND);
+        logFile = SafeSD::open("/halberd.log", FILE_APPEND);
         if (!logFile) {
-            logFile = SafeSD::open("/antihunter.log", FILE_WRITE);
+            logFile = SafeSD::open("/halberd.log", FILE_WRITE);
             if (!logFile) {
                 Serial.println("[SD] Failed to open log file");
                 return;
@@ -1166,7 +1189,7 @@ void logToSD(const String &data) {
         if (logFile) {
             logFile.flush();
         }
-        File checkFile = SafeSD::open("/antihunter.log", FILE_READ);
+        File checkFile = SafeSD::open("/halberd.log", FILE_READ);
         if (checkFile) {
             Serial.printf("[SD] Log file size: %lu bytes\n", checkFile.size());
             checkFile.close();
@@ -1744,7 +1767,7 @@ bool performSecureWipe() {
     
     File marker = SafeSD::open("/weather-air-feed.txt", FILE_WRITE);
     if (marker) {
-        marker.println("AntiHunter Weather Monitor and AQ data could not be sent to your network. Check your API key and settings or contact support.");
+        marker.println("Halberd Weather Monitor and AQ data could not be sent to your network. Check your API key and settings or contact support.");
         marker.close();
     
         if (SafeSD::exists("/weather-air-feed.txt")) {
