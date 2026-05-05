@@ -475,8 +475,8 @@ void coordinatorSetupTask(void *parameter) {
     // Wait for child nodes to ACK - give mesh time to relay responses
     Serial.println("[TRIANGULATE] Waiting for child node ACKs...");
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = "TRIANGULATING: Waiting for mesh nodes to respond...";
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = "TRIANGULATING: Waiting for mesh nodes to respond...";
     }
     vTaskDelay(pdMS_TO_TICKS(15000));
 
@@ -489,8 +489,8 @@ void coordinatorSetupTask(void *parameter) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = ("TRIANGULATING: " + String(totalNodes) + " nodes ready, starting scan...").c_str();
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = ("TRIANGULATING: " + String(totalNodes) + " nodes ready, starting scan...").c_str();
     }
 
     // Broadcast synchronized cycle start time + node list for slot coordination
@@ -623,8 +623,8 @@ void startTriangulation(const String &targetMac, int duration) {
     }
     
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = "TRIANGULATING: Synchronizing time with mesh nodes...";
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = "TRIANGULATING: Synchronizing time with mesh nodes...";
     }
 
     {
@@ -747,9 +747,9 @@ void stopTriangulation() {
         }
 
         {
-            std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
+            std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
             std::lock_guard<std::mutex> triLock(triangulationMutex);
-            antihunter::lastResults = ("TRIANGULATING: Scan complete, collecting final reports from " +
+            halberd::lastResults = ("TRIANGULATING: Scan complete, collecting final reports from " +
                                       String(triangulateAcks.size()) + " nodes...").c_str();
         }
 
@@ -795,8 +795,8 @@ void stopTriangulation() {
 
                 // Update UI with collection progress (every ~1s to avoid excessive updates)
                 if (millis() - lastUIUpdate > 1000) {
-                    std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-                    antihunter::lastResults = ("TRIANGULATING: Collecting reports... " +
+                    std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+                    halberd::lastResults = ("TRIANGULATING: Collecting reports... " +
                                               String(reportedCount) + "/" + String(totalAcked + 1) + " nodes").c_str();
                     lastUIUpdate = millis();
                 }
@@ -950,8 +950,8 @@ void stopTriangulation() {
     vTaskDelay(pdMS_TO_TICKS(500));
 
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = "TRIANGULATING: Calculating target position...";
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = "TRIANGULATING: Calculating target position...";
     }
 
     Serial.println("[TRIANGULATE] Calculating final results...");
@@ -960,9 +960,9 @@ void stopTriangulation() {
     Serial.printf("[TRIANGULATE] Results preview: %.100s...\n", results.c_str());
 
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = results.c_str();
-        Serial.printf("[TRIANGULATE] Final results stored in lastResults (%d chars)\n", antihunter::lastResults.length());
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = results.c_str();
+        Serial.printf("[TRIANGULATE] Final results stored in lastResults (%d chars)\n", halberd::lastResults.length());
     }
     
     if (sdAvailable) {

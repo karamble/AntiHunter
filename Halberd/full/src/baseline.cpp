@@ -388,8 +388,8 @@ void baselineDetectionTask(void *pv) {
     bleFramesSeen = 0;
     scanning = true;
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = "Baseline not yet established\nStarting...\n";
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = "Baseline not yet established\nStarting...\n";
     }
 
     baselineStats = BaselineStats();
@@ -431,8 +431,8 @@ void baselineDetectionTask(void *pv) {
 
     // Write initial results immediately so web UI shows scan is active
     {
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = getBaselineResults().c_str();
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = getBaselineResults().c_str();
     }
 
     while (millis() - phaseStart < baselineDuration && !stopRequested) {
@@ -446,8 +446,8 @@ void baselineDetectionTask(void *pv) {
         if ((int32_t)(millis() - nextResultsUpdate) >= 0) {
             nextResultsUpdate += 2000;
             // Always update during Phase 1 — UI needs to show establishment progress
-            std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-            antihunter::lastResults = getBaselineResults().c_str();
+            std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+            halberd::lastResults = getBaselineResults().c_str();
             baselineResultsDirty = false;
         }
 
@@ -750,8 +750,8 @@ void baselineDetectionTask(void *pv) {
             nextResultsUpdate = millis() + 2000;
             String resultStr = getBaselineResults();
             {
-                std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-                antihunter::lastResults = resultStr.c_str();
+                std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+                halberd::lastResults = resultStr.c_str();
             }
             Serial.printf("[BASELINE] Results updated: %d bytes, anomalies=%d, dirty=%s\n",
                         resultStr.length(), anomalyCount, baselineResultsDirty ? "true" : "false");
@@ -840,8 +840,8 @@ void baselineDetectionTask(void *pv) {
 
     {
         String finalResults = getBaselineResults();
-        std::lock_guard<std::mutex> lock(antihunter::lastResultsMutex);
-        antihunter::lastResults = finalResults.c_str();
+        std::lock_guard<std::mutex> lock(halberd::lastResultsMutex);
+        halberd::lastResults = finalResults.c_str();
     }
     
     uint32_t finalHeap = ESP.getFreeHeap();

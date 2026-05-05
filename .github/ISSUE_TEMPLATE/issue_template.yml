@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report an issue with AntiHunter.
+        Thanks for taking the time to report an issue with Halberd.
         
         Before submitting, please search existing issues to avoid duplicates.
 

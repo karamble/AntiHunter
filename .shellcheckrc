@@ -1,4 +1,4 @@
-# AntiHunter ShellCheck Configuration
+# Halberd ShellCheck Configuration
 # Static analysis configuration for shell scripts
 
 # Disable specific warnings that are acceptable for this project

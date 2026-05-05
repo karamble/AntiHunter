@@ -13,3 +13,10 @@
 *.weaudit
 
 demo.html
+
+# Local secrets sourced by scripts/flash-heltec-meshtastic.sh (MESH_PSK etc.)
+.env
+
+# Per-user Claude Code state. Never commit.
+CLAUDE.md
+.claude/

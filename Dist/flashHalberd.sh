@@ -3,8 +3,8 @@ set -e
 
 ESPTOOL_REPO="https://github.com/alphafox02/esptool"
 FIRMWARE_OPTIONS=(
-    "AntiHunter AP (With WiFi AP) - v0.9.4 Beta :https://github.com/lukeswitz/AntiHunter/raw/refs/heads/main/Dist/antihunter-full-v0.9.4.bin"
-    "AntiHunter Headless - (Mesh only) v0.9.4 Beta:https://github.com/lukeswitz/AntiHunter/raw/refs/heads/main/Dist/antihunter-headless-v0.9.4.bin"
+    "Halberd AP (With WiFi AP) - v0.9.4 Beta :https://github.com/karamble/halberd/raw/refs/heads/main/Dist/antihunter-full-v0.9.4.bin"
+    "Halberd Headless - (Mesh only) v0.9.4 Beta:https://github.com/karamble/halberd/raw/refs/heads/main/Dist/antihunter-headless-v0.9.4.bin"
 )
 ESPTOOL_DIR="esptool"
 CUSTOM_BIN=""
@@ -121,12 +121,12 @@ collect_configuration() {
     if [ "$IS_HEADLESS" = false ]; then
         echo ""
         echo "WiFi Access Point Configuration:"
-        read -p "WiFi SSID [default: Antihunter]: " AP_SSID
-        AP_SSID=${AP_SSID:-"Antihunter"}
+        read -p "WiFi SSID [default: Halberd]: " AP_SSID
+        AP_SSID=${AP_SSID:-"Halberd"}
         
         read -p "WiFi Password (min 8 chars, empty for default): " AP_PASS
         if [ -z "$AP_PASS" ]; then
-            AP_PASS="antihunter"
+            AP_PASS="halberd"
         fi
         
         AP_SSID_JSON=",\"apSsid\":\"$AP_SSID\",\"apPass\":\"$AP_PASS\""
@@ -162,7 +162,7 @@ collect_configuration() {
         SETUP_DELAY=60
     fi
     
-    cat > /tmp/antihunter_config.json <<EOF
+    cat > /tmp/halberd_config.json <<EOF
 {"nodeId":"$NODE_ID","scanMode":$SCAN_MODE,"channels":"$CHANNELS","meshInterval":$MESH_INTERVAL,"targets":"$TARGETS","rfPreset":$RF_PRESET,"wifiChannelTime":120,"wifiScanInterval":4000,"bleScanInterval":2000,"bleScanDuration":2000,"baselineRamSize":$BASELINE_RAM,"baselineSdMax":$BASELINE_SD${AP_SSID_JSON},"autoEraseEnabled":$AUTO_ERASE_ENABLED,"autoEraseDelay":$AUTO_ERASE_DELAY,"autoEraseCooldown":$AUTO_ERASE_COOLDOWN,"vibrationsRequired":$VIBRATIONS_REQUIRED,"detectionWindow":$DETECTION_WINDOW,"setupDelay":$SETUP_DELAY}
 EOF
     
@@ -408,7 +408,7 @@ if [ "$CONFIG_MODE" = true ]; then
     echo ""
     echo "Sending configuration to device..."
     
-    CONFIG_JSON_COMPACT=$(cat /tmp/antihunter_config.json | tr -d '\n' | tr -d ' ')
+    CONFIG_JSON_COMPACT=$(cat /tmp/halberd_config.json | tr -d '\n' | tr -d ' ')
     
     $PYTHON_CMD -c "
 import serial
@@ -460,7 +460,7 @@ except Exception as e:
     sys.exit(1)
 " || echo "[CONFIG] Warning: Config send may have failed"
 
-    rm -f /tmp/antihunter_config.json
+    rm -f /tmp/halberd_config.json
     
     echo ""
     echo "Waiting for device reboot..."

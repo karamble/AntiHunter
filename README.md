@@ -1,30 +1,22 @@
-> [!IMPORTANT]
-> **Heads up — this fork is being renamed to `Halberd`.**
->
-> `karamble/AntiHunter` is the MIT-pinned fork of [`lukeswitz/AntiHunter`](https://github.com/lukeswitz/AntiHunter), frozen at the [`v-last-mit`](https://github.com/karamble/AntiHunter/releases/tag/v-last-mit) tag (commit `4680ea2`). Upstream relicensed to **AGPL-3.0-only** on 2026-04-30 ([commit `ce87a9c`](https://github.com/lukeswitz/AntiHunter/commit/ce87a9c)); this fork continues under MIT and pulls no AGPL-era commits.
->
-> Active development is moving to **`karamble/halberd`** with a coordinated rebrand: source-tree directory rename, `CONFIG_NODEID` prefix migration `AH<n>` → `HB<n>` (legacy `AH<n>` continues to work for already-deployed sensors), case STL respin, full MIT-clean `v1.0.0` release. The repo here will redirect once renamed; existing clones, tags (`v-last-mit`, `v0.9.x`), and binaries remain available.
-
 <div align="center">
 
-[![PlatformIO CI](https://github.com/karamble/AntiHunter/actions/workflows/platformio.yml/badge.svg)](https://github.com/karamble/AntiHunter/actions/workflows/platformio.yml)
-[![Pre-release](https://img.shields.io/github/v/release/karamble/AntiHunter?include_prereleases&label=pre-release&color=orange)](https://github.com/karamble/AntiHunter/releases)
-[![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/karamble/AntiHunter)](https://github.com/karamble/AntiHunter/tree/main/Antihunter)
+[![PlatformIO CI](https://github.com/karamble/halberd/actions/workflows/platformio.yml/badge.svg)](https://github.com/karamble/halberd/actions/workflows/platformio.yml)
+[![Pre-release](https://img.shields.io/github/v/release/karamble/halberd?include_prereleases&label=pre-release&color=orange)](https://github.com/karamble/halberd/releases)
+[![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/karamble/halberd)](https://github.com/karamble/halberd/tree/main/Halberd)
 </div>
 
 
 <p align="center">
   
-  <img src="https://github.com/TheRealSirHaXalot/AntiHunter-Command-Control-PRO/blob/main/TopREADMElogo.png?raw=true" alt="AntiHunter Command Center Logo" width="320" />
 
 <div align="center">
   <a href="#getting-started">Quick Start</a> | <a href="#hardware">DIY Build</a> | <a href="#features">Features</a>
 </div>
-  <h3 align="center">DIGI Detection Node 2.4GHz WiFi/BLE Firmware</h3>
+  <h3 align="center">Halberd: 2.4GHz WiFi/BLE Detection Node Firmware</h3>
 </p>
 
 > [!NOTE]
-> **Standalone firmware, also integrates with the [AntiHunter Command Center](https://github.com/TheRealSirHaXalot/AntiHunter-Command-Control-PRO)**
+> Standalone firmware. Reports over a Meshtastic LoRa mesh. Can be operated bare or paired with a compatible C2 server such as [karamble/diginode-cc](https://github.com/karamble/diginode-cc).
 >
 > Early Release: Beta version with new features in development. Potential stability issues and unexpected behavior may occur.
 
@@ -45,7 +37,9 @@
 10. [Mesh Commands](#mesh-commands)
 11. [API Reference](#api-reference)
 12. [Credits](#credits)
-13. [Disclaimer](#legal-disclaimer)
+13. [Related Projects](#related-projects)
+14. [License & Lineage](#license--lineage)
+15. [Disclaimer](#legal-disclaimer)
 
 ## Overview
 
@@ -53,12 +47,9 @@
 - ESP32-S3 with WiFi/BLE scanning, GPS, SD logging, and LoRa mesh networking. 
 - Deploy one node or a distributed network -- each scans independently and coordinates over Meshtastic.
 
-<a href="https://www.tindie.com/stores/teamantihunter/"><img src="https://d2ss6ovg47m0r5.cloudfront.net/badges/tindie-mediums.png" alt="I sell on Tindie" width="150" height="78"></a>
-
 ## Features
 
-<img width="2046" height="1395" alt="image" src="https://github.com/user-attachments/assets/66817c73-58db-4697-b4e9-38f8ba449c4c" />
-
+<!-- TODO: refresh dashboard screenshot once Halberd UI is finalized -->
 
 | Feature | What it does | Scan modes |
 |---------|-------------|------------|
@@ -215,7 +206,7 @@ Goes beyond probe request capture: correlates all three 802.11 address fields to
 | Sensor | Interface | Description |
 |--------|-----------|-------------|
 | **GPS** | UART2 (RX=GPIO44, TX=GPIO43) 9600 baud | TinyGPS++ NMEA parsing. Location, altitude, satellite data. API at `/gps`. |
-| **SD Card** | SPI | Logs to `/antihunter.log` with timestamps, MACs, RSSI, GPS. Web interface shows storage stats. |
+| **SD Card** | SPI | Logs to `/halberd.log` with timestamps, MACs, RSSI, GPS. Web interface shows storage stats. |
 | **Vibration/Tamper** | SW-420 (interrupt) | Interrupt-driven with 3s rate limiting. Mesh alerts with GPS and timestamps. |
 | **RTC** | DS3231 via I2C | NTP sync on flash, fallback to system time and GPS. Drift correction. All timestamps UTC. |
 
@@ -297,7 +288,7 @@ Nodes function independently and coordinate via Meshtastic mesh networking.
 
 **Workflow:** Detection -> Data collection (RSSI, GPS, timestamp) -> Mesh broadcast -> Command center aggregation
 
-**[AntiHunter Command Center](https://github.com/TheRealSirHaXalot/AntiHunter-Command-Control-PRO):** Aggregates data from all nodes with real-time mapping and visualization.
+**Mesh C2 server:** Halberd nodes emit text frames over Meshtastic that any compatible C2 backend can consume. The reference implementation is [karamble/diginode-cc](https://github.com/karamble/diginode-cc) (Go, Postgres, Docker). The frame catalog covers STATUS, DEVICE, DRONE, ATTACK, *_ACK, and similar. Operator-issued commands round-trip via the same wire format using `@<nodeId>` prefixes.
 
 ---
 
@@ -311,12 +302,12 @@ Nodes function independently and coordinate via Meshtastic mesh networking.
 <img width="2241" height="2358" alt="image" src="https://github.com/user-attachments/assets/426c4693-3dc1-49f0-9a6c-ccd2bb3a758e" />
 
  
-- Illustrated [assembly manual](https://github.com/lukeswitz/AntiHunter/blob/main/hw/Prototype_STL_Files/Antihunter-DIGINODE-AssemblyManual.pdf)
+- Illustrated [assembly manual](https://github.com/karamble/halberd/blob/main/hw/Prototype_STL_Files/Halberd-AssemblyManual.pdf)
 
 ### Core Components
 
 - **Seeed XIAO ESP32-S3** (minimum 8MB flash)
-- **Meshtastic board**: Heltec v3.2 (recommended) or T114. Alternatives in [discussions](https://github.com/lukeswitz/AntiHunter/discussions).
+- **Meshtastic board**: Heltec v3.2 (recommended) or T114. Alternatives in [discussions](https://github.com/karamble/halberd/discussions).
 - **GPS, SDHC, vibration, and RTC modules**
 
 <details>
@@ -355,8 +346,8 @@ POWER & THERMAL
 
 ENCLOSURE
 - 1x Weatherproof Enclosure (3D printable)
-  - STL files: [hw folder](https://github.com/lukeswitz/AntiHunter/tree/main/hw/Prototype_STL_Files)
-- Assembly manual: [PDF](https://github.com/lukeswitz/AntiHunter/blob/main/hw/Prototype_STL_Files/Antihunter-DIGINODE-AssemblyManual.pdf)
+  - STL files: [hw folder](https://github.com/karamble/halberd/tree/main/hw/Prototype_STL_Files)
+- Assembly manual: [PDF](https://github.com/karamble/halberd/blob/main/hw/Prototype_STL_Files/Halberd-AssemblyManual.pdf)
 
 </details>
 
@@ -392,21 +383,21 @@ XIAO ESP32S3 [Pin Diagram](https://camo.githubusercontent.com/29816f5888cbba2564
 
 Flash and configure directly from your browser -- no tools to install. Requires Chrome or Edge on desktop.
 
-**[Open Web Flasher](https://lukeswitz.github.io/AntiHunter/)** -- select Full or Headless, plug in your ESP32-S3, and click Connect & Flash. After flashing, use the built-in serial terminal to configure the device: it resets the board, detects the config window, and sends your settings automatically.
+**[Open Web Flasher](https://github.com/karamble/halberd#getting-started)** -- select Full or Headless, plug in your ESP32-S3, and click Connect & Flash. After flashing, use the built-in serial terminal to configure the device: it resets the board, detects the config window, and sends your settings automatically.
 
 ### CLI Flash
 
 ```bash
-curl -fsSL -o flashAntihunter.sh https://raw.githubusercontent.com/lukeswitz/AntiHunter/main/Dist/flashAntihunter.sh
-chmod +x flashAntihunter.sh
-./flashAntihunter.sh
+curl -fsSL -o flashHalberd.sh https://raw.githubusercontent.com/karamble/halberd/main/Dist/flashHalberd.sh
+chmod +x flashHalberd.sh
+./flashHalberd.sh
 ```
 
 Use `-c` to configure device parameters during flash, `-e` to erase flash first.
 
 **Post-flash:**
 
-- **Full firmware**: Connect to `Antihunter` WiFi AP (password: `antihunt3r123`), open `http://192.168.4.1`. Configure RF settings, detection modes, and change the AP credentials in RF Settings.
+- **Full firmware**: Connect to `Halberd` WiFi AP (password: `antihunt3r123`), open `http://192.168.4.1`. Configure RF settings, detection modes, and change the AP credentials in RF Settings.
 - **Headless firmware**: Serial monitor or mesh commands only.
 
 ### Build from Source
@@ -414,21 +405,21 @@ Use `-c` to configure device parameters during flash, `-e` to erase flash first.
 **Prerequisites:** PlatformIO, Git, USB cable. Optional: VS Code with PlatformIO extension.
 
 ```bash
-git clone https://github.com/lukeswitz/AntiHunter.git
-cd AntiHunter
+git clone https://github.com/karamble/halberd.git
+cd halberd
 ```
 
 ```bash
 pio device list                                    # List connected devices
-pio run -e AntiHunter-full -t upload               # Flash full firmware (web UI)
-pio run -e AntiHunter-headless -t upload           # Flash headless firmware
-pio device monitor -e AntiHunter-full              # Serial monitor
-pio run -e AntiHunter-full -t erase -t upload      # Clean flash (erase + upload)
+pio run -e halberd-full -t upload               # Flash full firmware (web UI)
+pio run -e halberd-headless -t upload           # Flash headless firmware
+pio device monitor -e halberd-full              # Serial monitor
+pio run -e halberd-full -t erase -t upload      # Clean flash (erase + upload)
 ```
 
 **Build environments:**
-- `AntiHunter-full` -- Web server (ESPAsyncWebServer, AsyncTCP) with AP dashboard
-- `AntiHunter-headless` -- Minimal dependencies, no web UI, mesh/serial only
+- `halberd-full` -- Web server (ESPAsyncWebServer, AsyncTCP) with AP dashboard
+- `halberd-headless` -- Minimal dependencies, no web UI, mesh/serial only
 
 ---
 
@@ -439,7 +430,7 @@ Meshtastic LoRa mesh via UART for long-range distributed sensing.
 - **Connection**: TEXTMSG mode, 115200 baud. Pins: `10 RX / 9 TX` (T114), `19 RX / 20 TX` (Heltec V3)
 - **Protocol**: Standard Meshtastic serial, public and encrypted channels
 - **Rate limiting**: 3s intervals (configurable)
-- **Addressing**: `@ALL COMMAND` for broadcast, `@AH01 COMMAND` for a specific node. Node IDs: 2-5 alphanumeric chars.
+- **Addressing**: `@ALL COMMAND` for broadcast, `@HB01 COMMAND` for a specific node. Node IDs are HB-prefixed for halberd-firmware sensors (e.g. `HB01`, `HB64`). Legacy AH-prefixed sensors keep working until reflashed.
 
 ## Mesh Commands
 
@@ -460,7 +451,7 @@ All timestamps UTC. Node IDs: 2-5 alphanumeric characters (A-Z, 0-9), no spaces.
 | Command | Parameters | Example |
 |---------|------------|---------|
 | `CONFIG_TARGETS` | Pipe-delimited MACs, OUI prefixes, or SSIDs | `@ALL CONFIG_TARGETS:AA:BB:CC:DD:EE:FF\|11:22:33\|MyNetwork` |
-| `CONFIG_NODEID` | 2-5 alphanumeric ID | `@AH01 CONFIG_NODEID:AH02` |
+| `CONFIG_NODEID` | 2-5 alphanumeric ID | `@HB01 CONFIG_NODEID:HB02` |
 | `CONFIG_RSSI` | Threshold (-128 to -10) | `@ALL CONFIG_RSSI:-80` |
 | `CONFIG_CHANNELS` | Comma-separated channels | `@ALL CONFIG_CHANNELS:1,6,11` |
 
@@ -485,9 +476,9 @@ The `+PROBE` flag on `DEVICE_SCAN_START` enables probe request capture during de
 
 | Command | Parameters | Example |
 |---------|------------|---------|
-| `TRIANGULATE_START` | `target:duration[:rfEnv[:wifiPwr:blePwr]]` rfEnv: 0=OpenSky, 1=Suburban, 2=Indoor, 3=IndoorDense, 4=Industrial. wifiPwr/blePwr: 0.1-5.0 | `@AH01 TRIANGULATE_START:AA:BB:CC:DD:EE:FF:60:2:1.5:0.8` |
+| `TRIANGULATE_START` | `target:duration[:rfEnv[:wifiPwr:blePwr]]` rfEnv: 0=OpenSky, 1=Suburban, 2=Indoor, 3=IndoorDense, 4=Industrial. wifiPwr/blePwr: 0.1-5.0 | `@HB01 TRIANGULATE_START:AA:BB:CC:DD:EE:FF:60:2:1.5:0.8` |
 | `TRIANGULATE_STOP` | None | `@ALL TRIANGULATE_STOP` |
-| `TRIANGULATE_RESULTS` | None | `@AH01 TRIANGULATE_RESULTS` |
+| `TRIANGULATE_RESULTS` | None | `@HB01 TRIANGULATE_RESULTS` |
 
 </details>
 
@@ -496,15 +487,15 @@ The `+PROBE` flag on `DEVICE_SCAN_START` enables probe request capture during de
 
 | Command | Parameters | Example |
 |---------|------------|---------|
-| `ERASE_REQUEST` | None | `@AH01 ERASE_REQUEST` |
-| `ERASE_FORCE` | Auth token | `@AH02 ERASE_FORCE:AH_12345678_87654321_00001234` |
-| `ERASE_CANCEL` | None | `@AH01 ERASE_CANCEL` |
-| `AUTOERASE_ENABLE` | `setup:erase:vibs:window:cooldown` (seconds, except vibs count) | `@AH01 AUTOERASE_ENABLE:60:30:3:30:300` |
-| `AUTOERASE_DISABLE` | None | `@AH01 AUTOERASE_DISABLE` |
-| `AUTOERASE_STATUS` | None | `@AH01 AUTOERASE_STATUS` |
-| `VIBRATION_STATUS` | None | `@AH01 VIBRATION_STATUS` |
-| `VIBRATION_ON` | None | `@AH01 VIBRATION_ON` |
-| `VIBRATION_OFF` | None | `@AH01 VIBRATION_OFF` |
+| `ERASE_REQUEST` | None | `@HB01 ERASE_REQUEST` |
+| `ERASE_FORCE` | Auth token | `@HB02 ERASE_FORCE:HB_12345678_87654321_00001234` |
+| `ERASE_CANCEL` | None | `@HB01 ERASE_CANCEL` |
+| `AUTOERASE_ENABLE` | `setup:erase:vibs:window:cooldown` (seconds, except vibs count) | `@HB01 AUTOERASE_ENABLE:60:30:3:30:300` |
+| `AUTOERASE_DISABLE` | None | `@HB01 AUTOERASE_DISABLE` |
+| `AUTOERASE_STATUS` | None | `@HB01 AUTOERASE_STATUS` |
+| `VIBRATION_STATUS` | None | `@HB01 VIBRATION_STATUS` |
+| `VIBRATION_ON` | None | `@HB01 VIBRATION_ON` |
+| `VIBRATION_OFF` | None | `@HB01 VIBRATION_OFF` |
 
 </details>
 
@@ -513,9 +504,9 @@ The `+PROBE` flag on `DEVICE_SCAN_START` enables probe request capture during de
 
 | Command | Parameters | Example |
 |---------|------------|---------|
-| `BATTERY_SAVER_START` | `interval_minutes` (1-30, default 5) | `@AH01 BATTERY_SAVER_START:10` |
-| `BATTERY_SAVER_STOP` | None | `@AH01 BATTERY_SAVER_STOP` |
-| `BATTERY_SAVER_STATUS` | None | `@AH01 BATTERY_SAVER_STATUS` |
+| `BATTERY_SAVER_START` | `interval_minutes` (1-30, default 5) | `@HB01 BATTERY_SAVER_START:10` |
+| `BATTERY_SAVER_STOP` | None | `@HB01 BATTERY_SAVER_STOP` |
+| `BATTERY_SAVER_STATUS` | None | `@HB01 BATTERY_SAVER_STATUS` |
 
 Stops WiFi/BLE scanning, reduces CPU to 80MHz, enables light sleep, GPS polled once per minute. Mesh UART stays active. Heartbeat format:
 
@@ -532,9 +523,9 @@ Periodic status broadcast over mesh. **Disabled by default.**
 
 | Command | Parameters | Example |
 |---------|------------|---------|
-| `HB_ON` | None | `@AH01 HB_ON` |
-| `HB_OFF` | None | `@AH01 HB_OFF` |
-| `HB_INTERVAL` | `minutes` (1-60) | `@AH01 HB_INTERVAL:10` |
+| `HB_ON` | None | `@HB01 HB_ON` |
+| `HB_OFF` | None | `@HB01 HB_OFF` |
+| `HB_INTERVAL` | `minutes` (1-60) | `@HB01 HB_INTERVAL:10` |
 
 Format: `NODE_ID: Time:YYYY-MM-DD_HH:MM:SS Temp:XX.XC [GPS:lat,lon]`
 
@@ -615,8 +606,8 @@ The **Data** tab in the web UI provides a searchable, sortable view of all SD-lo
 | `/api/drones/clear` | POST | Clear drone log (RAM + SD) |
 | `/api/vibrations.jsonl` | GET | Vibration/tamper event log (JSONL) |
 | `/api/vibrations/clear` | POST | Clear vibration log (SD) |
-| `/api/antihunter.log` | GET | System event log (text) |
-| `/api/antihunter.log/clear` | POST | Clear system log |
+| `/api/halberd.log` | GET | System event log (text) |
+| `/api/halberd.log/clear` | POST | Clear system log |
 
 Available datasets: Probe Devices, Probe Events, Deauth Attacks, Drone Detections, Vibration Events, Baseline Stats, and System Log. All datasets support export (download the raw file) and clear (with confirmation). The headless firmware logs the same data to SD without the web UI.
 
@@ -717,7 +708,26 @@ Available datasets: Probe Devices, Probe Events, Deauth Attacks, Drone Detection
 
 ## Credits
 
-Original concept and hardware design by @TheRealSirHaXalot. Get [involved](https://github.com/lukeswitz/AntiHunter/discussions) -- PRs, issues, and docs contributions welcome.
+Halberd stands on the shoulders of two upstream projects:
+
+- **[lukeswitz/AntiHunter](https://github.com/lukeswitz/AntiHunter)** by Luke Switzer. The original AntiHunter sensor firmware that Halberd forks from.
+- **[TheRealSirHaXalot/AntiHunter-Command-Control-PRO](https://github.com/TheRealSirHaXalot/AntiHunter-Command-Control-PRO)** by @TheRealSirHaXalot. Original concept, hardware design, and the NestJS Command & Control server that the wire protocol grew out of.
+
+## Related Projects
+
+- **[karamble/diginode-cc](https://github.com/karamble/diginode-cc)** -- Go reimplementation of the AntiHunter C2 server. Production C2 backend for Halberd nodes. Postgres, REST + WebSocket, multi-tenant.
+- **[karamble/meshtastic-gate-sensor](https://github.com/karamble/meshtastic-gate-sensor)** -- Companion sensor that reports gate/perimeter state over the same Meshtastic mesh that Halberd operates on.
+
+Get [involved](https://github.com/karamble/halberd/discussions) -- PRs, issues, and docs contributions welcome.
+
+## License & Lineage
+
+> [!NOTE]
+> **Halberd** is the MIT-licensed continuation of the [`karamble/AntiHunter`](https://github.com/lukeswitz/AntiHunter) fork. The project was renamed from `AntiHunter` to `Halberd` in 2026-05. The GitHub repo is now `karamble/halberd` and old URLs redirect.
+>
+> The MIT lineage is pinned at the [`v-last-mit`](https://github.com/karamble/halberd/releases/tag/v-last-mit) tag of the upstream `lukeswitz/AntiHunter` project (commit `4680ea2`). Upstream relicensed to **AGPL-3.0-only** on 2026-04-30 ([commit `ce87a9c`](https://github.com/lukeswitz/AntiHunter/commit/ce87a9c)). Halberd continues under MIT and does not pull post-relicense upstream commits.
+>
+> Mesh short-ID prefix is `HB<n>` for newly-deployed sensors. Already-deployed `AH<n>` sensors keep working. The firmware accepts both prefixes.
 
 ## Legal Disclaimer
 
@@ -725,18 +735,18 @@ Original concept and hardware design by @TheRealSirHaXalot. Get [involved](https
 <summary>Full Disclaimer</summary>
 
 ```
-AntiHunter (AH) is provided for lawful, authorized use only -- such as research,
+Halberd is provided for lawful, authorized use only -- such as research,
 training, and security operations on systems and radio spectrum you own or have
 explicit written permission to assess. You are solely responsible for compliance
 with all applicable laws and policies, including privacy/data-protection (e.g.,
 GDPR), radio/telecom regulations (LoRa ISM band limits, duty cycle), and export
-controls. Do not use AH to track, surveil, or target individuals, or to collect
-personal data without a valid legal basis and consent where required.
+controls. Do not use Halberd to track, surveil, or target individuals, or to
+collect personal data without a valid legal basis and consent where required.
 
 Authors and contributors are not liable for misuse, damages, or legal
 consequences arising from use of this project.
 
-By using AH, you accept full responsibility for your actions and agree to
+By using Halberd, you accept full responsibility for your actions and agree to
 indemnify the authors and contributors against any claims related to your use.
 
 These tools are designed for ethical blue team use, such as securing events,

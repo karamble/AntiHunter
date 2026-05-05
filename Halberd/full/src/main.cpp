@@ -22,8 +22,8 @@ unsigned long lastRTCUpdate = 0;
 TaskHandle_t workerTaskHandle = nullptr;
 TaskHandle_t blueTeamTaskHandle = nullptr;
 
-std::string antihunter::lastResults = "No scan data yet.";
-std::mutex antihunter::lastResultsMutex;
+std::string halberd::lastResults = "No scan data yet.";
+std::mutex halberd::lastResultsMutex;
 
 void uartForwardTask(void *parameter) {
   static String meshBuffer = "";
@@ -169,7 +169,7 @@ void setup() {
     delay(1000);
     Serial.begin(115200);
     delay(300);
-    Serial.println("\n=== Antihunter [FULL] Boot ===");
+    Serial.println("\n=== Halberd [FULL] Boot ===");
 
     delay(400);
     initializeHardware();
@@ -200,7 +200,7 @@ void setup() {
     xTaskCreatePinnedToCore(uartForwardTask, "UARTForwardTask", 4096, NULL, 2, NULL, 1);
     delay(120);
 
-    Serial.println("===== ANTIHUNTER DIGINODE v0.9.4 BOOT COMPLETE =====");
+    Serial.println("===== HALBERD v1.0.0 BOOT COMPLETE =====");
 
     String currentSsid = prefs.getString("apSsid", AP_SSID);
     String currentPass = prefs.getString("apPass", AP_PASS);
