@@ -1927,11 +1927,15 @@ void addPathLossSample(float rssi, float distance, bool isWiFi) {
     if (distance < 0.1 || distance > 200.0) return;  // Sanity check
     
     PathLossSample sample = {rssi, distance, isWiFi, millis()};
-    const auto& samples = isWiFi ? adaptivePathLoss.wifiSamples : adaptivePathLoss.bleSamples;
-    
+    // The reference is mutated below (push_back / erase), so it must be
+    // non-const. Spelling the explicit type also avoids the GCC 8.4.0
+    // template-arg deduction quirks we worked around elsewhere.
+    std::vector<PathLossSample>& samples =
+        isWiFi ? adaptivePathLoss.wifiSamples : adaptivePathLoss.bleSamples;
+
     samples.push_back(sample);
-    
-    // Keep only recent samples
+
+    // Trim to the rolling window cap.
     if (samples.size() > adaptivePathLoss.MAX_SAMPLES) {
         samples.erase(samples.begin());
     }
