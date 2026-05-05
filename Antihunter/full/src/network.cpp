@@ -6408,7 +6408,11 @@ static void handleVibrationOn(const String &command)
 {
   (void)command;
   vibrationEnabled = true;
-  lastSaveTime = 0;
+  // Persist the toggle directly to NVS so the new value survives a
+  // power-cycle without depending on the debounce gate inside
+  // saveConfiguration() or on the SD-write half of that path. The
+  // headless variant uses the same explicit-write idiom.
+  prefs.putBool("vibEnabled", true);
   saveConfiguration();
   sendToSerial1(nodeId + ": VIBRATION_ON_ACK:OK", true);
   broadcastToTerminal("[VIB] Vibration broadcasts enabled");
@@ -6418,7 +6422,9 @@ static void handleVibrationOff(const String &command)
 {
   (void)command;
   vibrationEnabled = false;
-  lastSaveTime = 0;
+  // Same reasoning as handleVibrationOn — write through to NVS so the
+  // disabled state isn't lost if saveConfiguration() short-circuits.
+  prefs.putBool("vibEnabled", false);
   saveConfiguration();
   sendToSerial1(nodeId + ": VIBRATION_OFF_ACK:OK", true);
   broadcastToTerminal("[VIB] Vibration broadcasts disabled");
