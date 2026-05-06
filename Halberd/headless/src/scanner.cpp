@@ -53,6 +53,42 @@ uint32_t lastScanSecs = 0;
 bool lastScanForever = false;
 static std::map<String, String> apCache;
 static std::map<String, String> bleDeviceCache;
+// bleRawCache holds the raw advertisement payload (post-link-layer-header AD
+// structures, capped at 31 bytes for BLE 4.x legacy advertising) keyed by
+// MAC string. Populated by the BLE-scan branch when rawBleMode is true. The
+// mesh-update loop reads it to build BLERAW: frames. Cleared at scan start.
+static std::map<String, std::vector<uint8_t>> bleRawCache;
+
+// base64Encode produces a no-wrap base64 string of n bytes from data. Output
+// uses standard alphabet (A-Z, a-z, 0-9, +, /) with '=' padding. Used to
+// pack raw BLE advertisement bytes into the BLERAW: text frame.
+static String base64Encode(const uint8_t *data, size_t n) {
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    String out;
+    out.reserve(((n + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 3 <= n) {
+        uint32_t v = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | uint32_t(data[i + 2]);
+        out += alphabet[(v >> 18) & 0x3F];
+        out += alphabet[(v >> 12) & 0x3F];
+        out += alphabet[(v >> 6) & 0x3F];
+        out += alphabet[v & 0x3F];
+        i += 3;
+    }
+    if (i < n) {
+        uint32_t v = uint32_t(data[i]) << 16;
+        if (i + 1 < n) v |= uint32_t(data[i + 1]) << 8;
+        out += alphabet[(v >> 18) & 0x3F];
+        out += alphabet[(v >> 12) & 0x3F];
+        if (i + 1 < n) {
+            out += alphabet[(v >> 6) & 0x3F];
+            out += '=';
+        } else {
+            out += "==";
+        }
+    }
+    return out;
+}
 
 static portMUX_TYPE rfConfigMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -722,6 +758,7 @@ void snifferScanTask(void *pv)
     hitsLog.clear();
     apCache.clear();
     bleDeviceCache.clear();
+    bleRawCache.clear();
     totalHits = 0;
     framesSeen = 0;
     bleFramesSeen = 0;
@@ -862,8 +899,17 @@ void snifferScanTask(void *pv)
                         if (bleDeviceCache.size() < MAX_BLE_CACHE) {
                             bleDeviceCache[macStr] = cleanName;
                         }
+                        // Capture raw advertisement payload for BLERAW: frames
+                        // when raw mode is on. Capped at 31 bytes (BLE 4.x AD
+                        // structures size limit). See full/ variant for the
+                        // mesh-budget rationale.
+                        if (rawBleMode && bleRawCache.size() < MAX_BLE_CACHE) {
+                            std::vector<uint8_t> payload = device->getPayload();
+                            if (payload.size() > 31) payload.resize(31);
+                            bleRawCache[macStr] = std::move(payload);
+                        }
                         uniqueMacs.insert(macStr);
-                        
+
                         uint8_t mac[6];
                         if (parseMac6(macStr, mac))
                         {
@@ -985,6 +1031,26 @@ void snifferScanTask(void *pv)
                             // Refill tokens periodically to maintain throughput
                             if (sentThisCycle % 3 == 0) {
                                 rateLimiter.refillTokens();
+                            }
+                        }
+                    }
+
+                    // Emit BLERAW: alongside DEVICE: when raw mode is on. See
+                    // full/ variant for the rationale. The C2-side classifier
+                    // reparses the AD structures from the base64 payload.
+                    if (rawBleMode && canSendInSlot()) {
+                        auto rawIt = bleRawCache.find(macStr);
+                        if (rawIt != bleRawCache.end() && !rawIt->second.empty()) {
+                            String rawMsg = getNodeId() + ": BLERAW:" + macStr + " " +
+                                            String(bestRssi) + " 0 " +
+                                            base64Encode(rawIt->second.data(), rawIt->second.size());
+                            if (rawMsg.length() <= MAX_MESH_SIZE) {
+                                if (sendToSerial1(rawMsg, true)) {
+                                    sentThisCycle++;
+                                    if (sentThisCycle % 3 == 0) {
+                                        rateLimiter.refillTokens();
+                                    }
+                                }
                             }
                         }
                     }

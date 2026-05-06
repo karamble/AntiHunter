@@ -493,6 +493,7 @@ void loadConfiguration() {
         hbEnabled = prefs.getBool("hbEnabled", false);
         hbInterval = prefs.getUInt("hbInterval", 600000);
         vibrationEnabled = prefs.getBool("vibEnabled", true);
+        rawBleMode = prefs.getBool("rawBleMode", false);
         return;
     }
 
