@@ -588,6 +588,305 @@ bool matchesSsid(const char *ssid)
     return false;
 }
 
+// ---- BLE fingerprint targets ---------------------------------------------
+//
+// Parallel to the WiFi targets vector. Holds operator-defined patterns that
+// match against BLE advertisement payload fields rather than MAC addresses.
+// Persisted to NVS under a separate key ("blelist") so the existing WiFi
+// "maclist" target list stays byte-for-byte unchanged.
+//
+// Used only by listScanTask (the SCAN_START path). Iterated after the
+// existing matchesMac/matchesSsid checks fall through, with first-match-wins
+// semantics. DEVICE_SCAN_START's snifferScanTask does not consult bleTargets
+// — that command is the environment-baseline streaming path and target
+// filtering would change its character.
+
+static std::vector<BleTarget> bleTargets;
+
+// globMatchTrailing implements the v1 trailing-glob matcher: an optional
+// single '*' at the end of the pattern matches any suffix. Without the '*'
+// the comparison is exact. There is no leading or infix '*' support — the
+// product use case (matching "Forerunner 245 1234567" against
+// "Forerunner *") is covered by trailing-glob alone.
+static bool globMatchTrailing(const char *pattern, const char *value)
+{
+    if (!pattern || !value) return false;
+    size_t plen = strlen(pattern);
+    if (plen == 0) return strlen(value) == 0;
+    if (pattern[plen - 1] == '*') {
+        size_t prefixLen = plen - 1;
+        if (prefixLen == 0) return true;  // "*" alone matches anything
+        if (strlen(value) < prefixLen) return false;
+        return strncmp(pattern, value, prefixLen) == 0;
+    }
+    return strcmp(pattern, value) == 0;
+}
+
+// parseBleTargetLine parses one CONFIG_TARGETS_BLE entry into a BleTarget.
+// Wire format: "T-B-####:key=val;key=val;..."
+// Recognised keys (all optional, omit for wildcard):
+//   mfr=0087            — manufacturer ID, 4-hex-char (with optional 0x prefix)
+//   uuid=FEF8,180D      — comma-separated 16-bit hex UUIDs (OR semantics)
+//   uuid128=12345678... — comma-separated 128-bit canonical UUIDs (OR)
+//   name=Forerunner *   — local-name pattern, optional trailing '*'
+//   appmin=128 / appmax=136 — appearance category range bounds
+//   txmin=-90 / txmax=-60  — TX power range bounds
+//   match=ALL or ANY    — combine present fields with AND (default) or OR
+// Returns true on success, false if the line is malformed or sets no fields.
+static bool parseBleTargetLine(const String &ln, BleTarget &out)
+{
+    // Initialize sentinels (do NOT memset because vectors have non-trivial dtors)
+    out.targetId[0] = '\0';
+    out.mfrId = -1;
+    out.uuid16.clear();
+    out.uuid128.clear();
+    out.namePattern[0] = '\0';
+    out.appearanceMin = -1;
+    out.appearanceMax = -1;
+    out.txPowerMin = -128;
+    out.txPowerMax = -128;
+    out.matchAll = true;
+
+    int colon = ln.indexOf(':');
+    if (colon <= 0) return false;
+
+    String tid = ln.substring(0, colon);
+    tid.trim();
+    if (tid.length() == 0 || tid.length() >= sizeof(out.targetId)) return false;
+    if (!tid.startsWith("T-")) return false;
+    strncpy(out.targetId, tid.c_str(), sizeof(out.targetId) - 1);
+    out.targetId[sizeof(out.targetId) - 1] = '\0';
+
+    String body = ln.substring(colon + 1);
+    body.trim();
+    if (body.length() == 0) return false;
+
+    int start = 0;
+    while (start < (int)body.length()) {
+        int sep = body.indexOf(';', start);
+        if (sep < 0) sep = body.length();
+        String pair = body.substring(start, sep);
+        pair.trim();
+        start = sep + 1;
+        if (pair.length() == 0) continue;
+
+        int eq = pair.indexOf('=');
+        if (eq <= 0) continue;
+        String key = pair.substring(0, eq);
+        String value = pair.substring(eq + 1);
+        key.trim(); key.toLowerCase();
+        value.trim();
+        if (value.length() == 0) continue;
+
+        if (key == "mfr") {
+            if (value.startsWith("0x") || value.startsWith("0X")) value = value.substring(2);
+            unsigned long n = strtoul(value.c_str(), nullptr, 16);
+            if (n <= 0xFFFF) out.mfrId = (int32_t)n;
+        } else if (key == "uuid" || key == "uuid16") {
+            int us = 0;
+            while (us < (int)value.length()) {
+                int c = value.indexOf(',', us);
+                if (c < 0) c = (int)value.length();
+                String item = value.substring(us, c);
+                item.trim();
+                us = c + 1;
+                if (item.length() == 0) continue;
+                if (item.startsWith("0x") || item.startsWith("0X")) item = item.substring(2);
+                if (item.length() == 4) {
+                    unsigned long u = strtoul(item.c_str(), nullptr, 16);
+                    if (u <= 0xFFFF) out.uuid16.push_back((uint16_t)u);
+                } else if (item.length() == 36) {
+                    item.toLowerCase();
+                    out.uuid128.push_back(item);
+                }
+            }
+        } else if (key == "uuid128") {
+            int us = 0;
+            while (us < (int)value.length()) {
+                int c = value.indexOf(',', us);
+                if (c < 0) c = (int)value.length();
+                String item = value.substring(us, c);
+                item.trim();
+                us = c + 1;
+                if (item.length() == 36) {
+                    item.toLowerCase();
+                    out.uuid128.push_back(item);
+                }
+            }
+        } else if (key == "name") {
+            strncpy(out.namePattern, value.c_str(), sizeof(out.namePattern) - 1);
+            out.namePattern[sizeof(out.namePattern) - 1] = '\0';
+        } else if (key == "appmin") {
+            long v = atol(value.c_str());
+            if (v >= 0 && v <= 0xFFFF) out.appearanceMin = (int32_t)v;
+        } else if (key == "appmax") {
+            long v = atol(value.c_str());
+            if (v >= 0 && v <= 0xFFFF) out.appearanceMax = (int32_t)v;
+        } else if (key == "txmin") {
+            long v = atol(value.c_str());
+            if (v >= -127 && v <= 20) out.txPowerMin = (int8_t)v;
+        } else if (key == "txmax") {
+            long v = atol(value.c_str());
+            if (v >= -127 && v <= 20) out.txPowerMax = (int8_t)v;
+        } else if (key == "match") {
+            value.toUpperCase();
+            out.matchAll = (value == "ALL");
+        }
+    }
+
+    bool hasField = (out.mfrId >= 0) || !out.uuid16.empty() || !out.uuid128.empty() ||
+                    out.namePattern[0] != '\0' || out.appearanceMin >= 0 ||
+                    out.appearanceMax >= 0 || out.txPowerMin > -128 || out.txPowerMax > -128;
+    return hasField;
+}
+
+// matchesBleFingerprint compares one BLE advertisement against one BleTarget.
+// Returns true on match and writes the target's identifier into outTid.
+//
+// Match algebra: each target field that's set (non-sentinel) contributes one
+// "present" check. The check matches when the device's value satisfies the
+// target's constraint. With matchAll=true (default), all present checks
+// must match (AND). With matchAll=false, any one present check matching is
+// enough (ANY/OR). Fields the target left unset are treated as wildcards
+// and don't enter the present count.
+//
+// All getters use NimBLE's lazy-parse from m_payload; cost is ~O(31 bytes)
+// per call, trivially within the BLE callback budget at ~50 targets.
+static bool matchesBleFingerprint(const NimBLEAdvertisedDevice *dev,
+                                   const BleTarget &t, char outTid[10])
+{
+    if (!dev) return false;
+    int present = 0;
+    int matched = 0;
+
+    // Manufacturer ID — first 2 little-endian bytes of getManufacturerData()
+    if (t.mfrId >= 0) {
+        present++;
+        if (dev->haveManufacturerData()) {
+            std::string md = dev->getManufacturerData();
+            if (md.size() >= 2) {
+                uint16_t mfr = (uint8_t)md[0] | ((uint16_t)(uint8_t)md[1] << 8);
+                if (mfr == (uint16_t)t.mfrId) matched++;
+            }
+        }
+    }
+
+    // 16-bit service UUIDs — OR/set membership
+    if (!t.uuid16.empty()) {
+        present++;
+        bool any = false;
+        uint8_t cnt = dev->getServiceUUIDCount();
+        for (uint8_t i = 0; i < cnt && !any; i++) {
+            NimBLEUUID u = dev->getServiceUUID(i);
+            if (u.bitSize() == 16) {
+                String s = String(u.toString().c_str());
+                if (s.startsWith("0x") || s.startsWith("0X")) s = s.substring(2);
+                unsigned long val = strtoul(s.c_str(), nullptr, 16);
+                for (uint16_t target : t.uuid16) {
+                    if (target == (uint16_t)val) { any = true; break; }
+                }
+            }
+        }
+        if (any) matched++;
+    }
+
+    // 128-bit service UUIDs — OR/set membership, lowercase compare
+    if (!t.uuid128.empty()) {
+        present++;
+        bool any = false;
+        uint8_t cnt = dev->getServiceUUIDCount();
+        for (uint8_t i = 0; i < cnt && !any; i++) {
+            NimBLEUUID u = dev->getServiceUUID(i);
+            if (u.bitSize() == 128) {
+                String s = String(u.toString().c_str());
+                s.toLowerCase();
+                for (const String &target : t.uuid128) {
+                    if (s == target) { any = true; break; }
+                }
+            }
+        }
+        if (any) matched++;
+    }
+
+    // Local name — trailing-glob match
+    if (t.namePattern[0] != '\0') {
+        present++;
+        if (dev->haveName()) {
+            String name = String(dev->getName().c_str());
+            if (globMatchTrailing(t.namePattern, name.c_str())) matched++;
+        }
+    }
+
+    // Appearance — range (either bound may be unset; unset bound = wildcard
+    // on that side)
+    if (t.appearanceMin >= 0 || t.appearanceMax >= 0) {
+        present++;
+        if (dev->haveAppearance()) {
+            uint16_t app = dev->getAppearance();
+            int32_t mn = t.appearanceMin >= 0 ? t.appearanceMin : 0;
+            int32_t mx = t.appearanceMax >= 0 ? t.appearanceMax : 0xFFFF;
+            if ((int32_t)app >= mn && (int32_t)app <= mx) matched++;
+        }
+    }
+
+    // TX power — range
+    if (t.txPowerMin > -128 || t.txPowerMax > -128) {
+        present++;
+        if (dev->haveTXPower()) {
+            int8_t txp = dev->getTXPower();
+            int mn = t.txPowerMin > -128 ? t.txPowerMin : -127;
+            int mx = t.txPowerMax > -128 ? t.txPowerMax : 20;
+            if ((int)txp >= mn && (int)txp <= mx) matched++;
+        }
+    }
+
+    if (present == 0) return false;
+
+    bool hit = t.matchAll ? (matched == present) : (matched > 0);
+    if (hit) {
+        strncpy(outTid, t.targetId, 9);
+        outTid[9] = '\0';
+        return true;
+    }
+    return false;
+}
+
+// saveBleTargetsList persists the full BLE target list to NVS (key="blelist")
+// and rebuilds the in-memory bleTargets vector from the same string. Mirrors
+// saveTargetsList's full-replace semantics: every CONFIG_TARGETS_BLE message
+// replaces the entire list, no incremental add/remove API. Lines that fail
+// parseBleTargetLine are dropped silently (they remain in NVS for diagnostics
+// but contribute no matchable target).
+void saveBleTargetsList(const String &txt)
+{
+    prefs.putString("blelist", txt);
+    bleTargets.clear();
+    int start = 0;
+    while (start < (int)txt.length()) {
+        int nl = txt.indexOf('\n', start);
+        if (nl < 0) nl = txt.length();
+        String line = txt.substring(start, nl);
+        line.trim();
+        if (line.length()) {
+            BleTarget t;
+            if (parseBleTargetLine(line, t)) {
+                bleTargets.push_back(std::move(t));
+            }
+        }
+        start = nl + 1;
+    }
+}
+
+String getBleTargetsList()
+{
+    return prefs.getString("blelist", "");
+}
+
+size_t getBleTargetCount()
+{
+    return bleTargets.size();
+}
+
 static inline bool matchesMac(const uint8_t *mac)
 {
     for (const auto &t : targets)
@@ -708,12 +1007,28 @@ class MyBLEScanCallbacks : public NimBLEScanCallbacks {
         }
 
         bool isMatch = false;
+        char matchedTid[10] = {0};
         if (triangulationActive) {
             isMatch = (memcmp(mac, triangulationTarget, 6) == 0);
         } else {
             isMatch = matchesMac(mac);
+            // BLE fingerprint targets — applied per-advertisement here in the
+            // scan callback, NOT inside listScanTask's BLE branch. NimBLE's
+            // setScanCallbacks(cb, wantDuplicates=true) routes every adv to
+            // onResult and leaves the internal getResults() buffer empty, so
+            // the only place mfr/UUID/name fingerprints can be inspected is
+            // right here. First-match-wins; the matched target ID propagates
+            // into Hit.targetId and out via sendMeshNotification as TID:T-B-####.
+            if (!isMatch) {
+                for (const auto &bt : bleTargets) {
+                    if (matchesBleFingerprint(advertisedDevice, bt, matchedTid)) {
+                        isMatch = true;
+                        break;
+                    }
+                }
+            }
         }
-        
+
         if (isMatch) {
             Hit h;
             memcpy(h.mac, mac, 6);
@@ -722,6 +1037,10 @@ class MyBLEScanCallbacks : public NimBLEScanCallbacks {
             strncpy(h.name, deviceName.c_str(), sizeof(h.name) - 1);
             h.name[sizeof(h.name) - 1] = '\0';
             h.isBLE = true;
+            if (matchedTid[0] != '\0') {
+                strncpy(h.targetId, matchedTid, sizeof(h.targetId) - 1);
+                h.targetId[sizeof(h.targetId) - 1] = '\0';
+            }
 
             if (macQueue) {
                 if (xQueueSend(macQueue, &h, pdMS_TO_TICKS(10)) != pdTRUE) {
@@ -3382,6 +3701,11 @@ void initializeScanner()
     saveTargetsList(txt);
     Serial.printf("Loaded %d targets\n", targets.size());
 
+    Serial.println("Loading BLE fingerprint targets...");
+    String bletxt = prefs.getString("blelist", "");
+    saveBleTargetsList(bletxt);
+    Serial.printf("Loaded %u BLE targets\n", (unsigned)getBleTargetCount());
+
     Serial.println("Loading allowlist...");
     String wtxt = prefs.getString("allowlist", "");
     saveAllowlist(wtxt);
@@ -3729,6 +4053,13 @@ void listScanTask(void *pv) {
         if ((currentScanMode == SCAN_BLE || currentScanMode == SCAN_BOTH) && pBLEScan &&
             (millis() - lastBLEScan >= rfConfig.bleScanInterval || lastBLEScan == 0)) {
             lastBLEScan = millis();
+            // pBLEScan->getResults() returns 0 devices in this build because
+            // setScanCallbacks(cb, /*wantDuplicates=*/true) routes every
+            // advertisement straight into MyBLEScanCallbacks::onResult and
+            // bypasses the internal results buffer. The BLE-target match
+            // therefore lives inside onResult, not here. This branch is kept
+            // for future revisions that may switch back to a results-based
+            // model and is otherwise a no-op.
             NimBLEScanResults scanResults = pBLEScan->getResults(500, false);
             if (stopRequested) break;
             for (int i = 0; i < scanResults.getCount(); i++) {
@@ -3752,18 +4083,32 @@ void listScanTask(void *pv) {
 
                 uint8_t mac[6];
                 bool isMatch;
+                char matchedTid[10] = {0};
                 if (triangulationActive) {
                     if (strlen(triangulationTargetIdentity) > 0) {
-                        isMatch = parseMac6(macStrOrig, mac) && 
+                        isMatch = parseMac6(macStrOrig, mac) &&
                                 matchesIdentityMac(triangulationTargetIdentity, mac);
                     } else {
-                        isMatch = parseMac6(macStrOrig, mac) && 
+                        isMatch = parseMac6(macStrOrig, mac) &&
                                 (memcmp(mac, triangulationTarget, 6) == 0);
                     }
                 } else {
                     isMatch = parseMac6(macStrOrig, mac) && matchesMac(mac);
                     if (!isMatch && name.length() > 0 && name != "Unknown") {
                         isMatch = matchesSsid(name.c_str());
+                    }
+                    // BLE fingerprint targets — only consulted when the
+                    // existing MAC/SSID matchers didn't already claim the
+                    // device. First-match-wins so the matched target ID
+                    // attaches to the Hit and propagates into the Target:
+                    // wire frame as TID:T-B-####.
+                    if (!isMatch && parseMac6(macStrOrig, mac)) {
+                        for (const auto &bt : bleTargets) {
+                            if (matchesBleFingerprint(device, bt, matchedTid)) {
+                                isMatch = true;
+                                break;
+                            }
+                        }
                     }
                 }
 
@@ -3777,6 +4122,10 @@ void listScanTask(void *pv) {
                     strncpy(bh.name, name.c_str(), sizeof(bh.name) - 1);
                     bh.name[sizeof(bh.name) - 1] = '\0';
                     bh.isBLE = true;
+                    if (matchedTid[0]) {
+                        strncpy(bh.targetId, matchedTid, sizeof(bh.targetId) - 1);
+                        bh.targetId[sizeof(bh.targetId) - 1] = '\0';
+                    }
                     if (!safeMacQueueSend(&bh, pdMS_TO_TICKS(10))) {
                         Serial.printf("[SCAN] Queue full/unavailable for target %s\n", macStrOrig.c_str());
                     }

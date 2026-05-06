@@ -15,6 +15,12 @@ struct Hit {
    uint8_t ch;
    char name[32];
    bool isBLE;
+   // "T-X-####" identifier when the device matched a fingerprint target
+   // (e.g. "T-B-1001" for a BLE fingerprint); empty for plain MAC/SSID
+   // matches. Default-zeroed so existing call sites that do "Hit h;
+   // memcpy(h.mac,...)..." don't carry garbage into the targetId comparison
+   // performed by sendMeshNotification.
+   char targetId[10] = {0};
 };
 
 struct DeauthStats {
@@ -31,6 +37,27 @@ struct Target {
     uint8_t len;
     char identityId[10];
     char ssid[33];
+};
+
+// BleTarget is a fingerprint pattern that matches against BLE advertisement
+// payload fields rather than MAC addresses. Used by SCAN_START's BLE branch
+// in listScanTask to track devices that rotate MAC (smartwatches, AirTags,
+// fitness trackers). DEVICE_SCAN_START's broad-stream baseline does not
+// consult bleTargets — those targets only filter the SCAN_START hunting
+// path. Matching uses the operator-selected combination of fields with
+// AND-across-present-fields semantics by default; OR available via
+// matchAll=false. Empty/sentinel field values are wildcards.
+struct BleTarget {
+    char targetId[10];                // "T-B-####" + null terminator
+    int32_t mfrId;                    // -1 sentinel = unset, else uint16 value
+    std::vector<uint16_t> uuid16;     // empty = unset; OR semantics across the list
+    std::vector<String> uuid128;      // empty = unset; canonical lowercase 36-char strings
+    char namePattern[33];             // "" = unset; trailing '*' = prefix-match glob
+    int32_t appearanceMin;            // -1 sentinel = unset, else uint16 SIG appearance category
+    int32_t appearanceMax;            // -1 sentinel = unset
+    int8_t txPowerMin;                // -128 sentinel = unset (real BLE range is -127..+20 dBm)
+    int8_t txPowerMax;                // -128 sentinel = unset
+    bool matchAll;                    // true = AND across present fields, false = ANY
 };
 
 struct Allowlist {
@@ -193,6 +220,9 @@ extern portMUX_TYPE uniqueMacsMux;
 
 // Functions
 void initializeScanner();
+void saveBleTargetsList(const String &txt);
+String getBleTargetsList();
+size_t getBleTargetCount();
 bool matchesIdentityMac(const char* identityId, const uint8_t* mac);
 void saveTargetsList(const String &txt);
 void snifferScanTask(void *pv);

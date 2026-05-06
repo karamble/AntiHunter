@@ -58,7 +58,11 @@ struct MeshTargetState {
 static std::map<uint64_t, MeshTargetState> meshTargetStates;
 const int RSSI_CHANGE_THRESHOLD = 5;  // dBm
 const float GPS_CHANGE_THRESHOLD = 0.0001;  // ~10 meters
-const unsigned long PER_TARGET_MIN_INTERVAL = 30000;  // 30 seconds per target
+// PER_TARGET_MIN_INTERVAL is the minimum gap between mesh sends for the
+// same target (keyed by MAC in meshTargetStates). Promoted from a const
+// to a runtime-tunable so operators can quiet down stationary targets
+// via TARGET_INTERVAL:<seconds>. Default mirrors the original 30 s.
+unsigned long PER_TARGET_MIN_INTERVAL = 30000;
 
 // Scanner vars
 extern std::atomic<bool> scanning;
@@ -297,6 +301,25 @@ void setMeshSendInterval(unsigned long interval) {
 
 unsigned long getMeshSendInterval() {
     return meshSendInterval;
+}
+
+// setTargetMinInterval applies a new per-target minimum gap (ms) and
+// persists it to NVS under "targetInterval". 5 s lower bound prevents a
+// firehose of duplicate frames for a single target; 600 s upper bound
+// keeps a target practically discoverable on the dashboard. Out-of-range
+// requests are rejected.
+void setTargetMinInterval(unsigned long ms) {
+    if (ms >= 5000 && ms <= 600000) {
+        PER_TARGET_MIN_INTERVAL = ms;
+        prefs.putULong("targetInterval", ms);
+        Serial.printf("[MESH] Per-target interval set to %lums\n", ms);
+    } else {
+        Serial.println("[MESH] Invalid target interval (5000-600000ms)");
+    }
+}
+
+unsigned long getTargetMinInterval() {
+    return PER_TARGET_MIN_INTERVAL;
 }
 
 // ------------- AP HTML -------------
@@ -4922,7 +4945,8 @@ server->on("/baseline/config", HTTP_GET, [](AsyncWebServerRequest *req)
       configJson += "\"nodeId\":\"" + prefs.getString("nodeId", "") + "\",\n";
       configJson += "\"scanMode\":" + String(currentScanMode) + ",\n";
       configJson += "\"channels\":\"" + rfConfig.wifiChannels + "\",\n";
-      configJson += "\"targets\":\"" + prefs.getString("maclist", "") + "\"\n";
+      configJson += "\"targets\":\"" + prefs.getString("maclist", "") + "\",\n";
+      configJson += "\"bleTargets\":\"" + prefs.getString("blelist", "") + "\"\n";
       configJson += "}";
       
       r->send(200, "application/json", configJson);
@@ -5966,6 +5990,14 @@ void sendMeshNotification(const Hit &hit) {
         baseMsg += " Name:" + cleanName;
     }
 
+    // BLE fingerprint matches carry the matched target identifier so the
+    // C2 can correlate the hit back to the operator-defined target row.
+    // Plain MAC/SSID matches leave targetId empty and emit no TID field.
+    if (hit.targetId[0] != '\0') {
+        baseMsg += " TID:";
+        baseMsg += hit.targetId;
+    }
+
     if (gpsValid) {
         baseMsg += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
     }
@@ -6021,6 +6053,20 @@ static void handleConfigTargets(const String &command)
   sendToSerial1(nodeId + ": CONFIG_ACK:TARGETS:OK", true);
 }
 
+// Mirrors handleConfigTargets but for BLE fingerprint targets. See
+// headless/src/network.cpp for the full rationale; the wire format is
+// "CONFIG_TARGETS_BLE:T-B-1001:mfr=0087;uuid=FEF8;name=Forerunner *\nT-B-1002:..."
+// and saveBleTargetsList replaces the entire list (no incremental ops).
+static void handleConfigTargetsBLE(const String &command)
+{
+  // strlen("CONFIG_TARGETS_BLE:") == 19
+  String body = command.substring(19);
+  saveBleTargetsList(body);
+  Serial.printf("[MESH] Updated BLE fingerprint targets (%u active)\n",
+                (unsigned)getBleTargetCount());
+  sendToSerial1(nodeId + ": CONFIG_ACK:TARGETS_BLE:OK", true);
+}
+
 static void handleConfigNodeId(const String &command)
 {
   Serial.printf("[DEBUG] CONFIG_NODEID block ENTERED\n");
@@ -6067,35 +6113,57 @@ static void handleConfigRssi(const String &command)
 
 static void handleScanStart(const String &command)
 {
+  // SCAN_START layout — channels and FOREVER are both optional:
+  //   SCAN_START:<mode>:<secs>
+  //   SCAN_START:<mode>:<secs>:<channels>
+  //   SCAN_START:<mode>:<secs>:<channels>:FOREVER
+  //   SCAN_START:<mode>:0:FOREVER             (channels-omitted shorthand)
+  //
+  // Channels default to "1,6,11" when the segment is missing or the slot
+  // is taken by FOREVER. The C2 drops the channels segment entirely for
+  // BLE-only scans (mode=1) since CHANNELS is consumed only on the WiFi
+  // branch of listScanTask.
   String params = command.substring(11);
-  int modeDelim = params.indexOf(':');
-  int secsDelim = params.indexOf(':', modeDelim + 1);
-  int channelDelim = params.indexOf(':', secsDelim + 1);
+  int firstColon  = params.indexOf(':');
+  if (firstColon <= 0) return;
+  int secondColon = params.indexOf(':', firstColon + 1);
+  int thirdColon  = secondColon > 0 ? params.indexOf(':', secondColon + 1) : -1;
 
-  if (modeDelim > 0 && secsDelim > 0)
-  {
-    int mode = params.substring(0, modeDelim).toInt();
-    int secs = params.substring(modeDelim + 1, secsDelim).toInt();
-    String channels = (channelDelim > 0) ? params.substring(secsDelim + 1, channelDelim) : "1,6,11";
-    bool forever = (channelDelim > 0 && params.substring(channelDelim + 1) == "FOREVER");
+  int    mode = params.substring(0, firstColon).toInt();
+  int    secs = params.substring(firstColon + 1,
+                  secondColon > 0 ? secondColon : params.length()).toInt();
+  String channels = "1,6,11";
+  bool   forever  = false;
 
-    if (mode >= 0 && mode <= 2)
-    {
-      if (scanning || workerTaskHandle || blueTeamTaskHandle || triangulationActive) {
-        Serial.println("[MESH] Radio busy, rejecting SCAN_START");
-        sendToSerial1(nodeId + ": SCAN_ACK:BUSY", true);
-      } else {
-        currentScanMode = (ScanMode)mode;
-        parseChannelsCSV(channels);
-        stopRequested = false;
-        scanning = true;
-        xTaskCreatePinnedToCore(listScanTask, "scan", 8192,
-                                reinterpret_cast<void*>(static_cast<intptr_t>(forever ? 0 : secs)), 1, &workerTaskHandle, 1);
-        Serial.printf("[MESH] Started scan via mesh command\n");
-        sendToSerial1(nodeId + ": SCAN_ACK:STARTED", true);
-      }
+  if (secondColon > 0) {
+    String tail = params.substring(secondColon + 1,
+                    thirdColon > 0 ? thirdColon : params.length());
+    if (tail == "FOREVER") {
+      forever = true;
+    } else if (tail.length() > 0) {
+      channels = tail;
+    }
+    if (thirdColon > 0 &&
+        params.substring(thirdColon + 1) == "FOREVER") {
+      forever = true;
     }
   }
+
+  if (mode < 0 || mode > 2) return;
+  if (scanning || workerTaskHandle || blueTeamTaskHandle || triangulationActive) {
+    Serial.println("[MESH] Radio busy, rejecting SCAN_START");
+    sendToSerial1(nodeId + ": SCAN_ACK:BUSY", true);
+    return;
+  }
+  currentScanMode = (ScanMode)mode;
+  parseChannelsCSV(channels);
+  stopRequested = false;
+  scanning = true;
+  xTaskCreatePinnedToCore(listScanTask, "scan", 8192,
+      reinterpret_cast<void*>(static_cast<intptr_t>(forever ? 0 : secs)),
+      1, &workerTaskHandle, 1);
+  Serial.printf("[MESH] Started scan via mesh command\n");
+  sendToSerial1(nodeId + ": SCAN_ACK:STARTED", true);
 }
 
 static void handleBaselineStart(const String &command)
@@ -6368,6 +6436,21 @@ static void handleStop(const String &command)
   stopRequested = true;
   Serial.println("[MESH] Stop command received via mesh");
   sendToSerial1(nodeId + ": STOP_ACK:OK", true);
+}
+
+// handleSetTime sets the RTC from a unix-epoch SETTIME command. Lives on
+// the same dispatch path as every other command so a USB-direct caller
+// can also drive it. Previously this lived in main.cpp loop() as a
+// separate Serial consumer that called readStringUntil('\n') and silently
+// dropped any non-SETTIME line it ate, which made USB-direct config
+// impossible.
+static void handleSetTime(const String &command)
+{
+  time_t epoch = (time_t)strtoul(command.substring(8).c_str(), nullptr, 10);
+  if (epoch > 1609459200 && setRTCTimeFromEpoch(epoch)) {
+    Serial.println("OK: RTC set");
+    broadcastToTerminal("[RTC] OK: RTC set");
+  }
 }
 
 static void handleStatus(const String &command)
@@ -7072,11 +7155,25 @@ static void handleHbInterval(const String &command)
   broadcastToTerminal("[HB] Interval set to " + String(minutes) + " min");
 }
 
+// handleTargetIntervalConfig accepts TARGET_INTERVAL:<seconds> from the
+// operator, clamps to 5..600 s, persists via setTargetMinInterval, and
+// ACKs back with TARGET_INTERVAL_ACK:<seconds> so the C2 closes the row.
+static void handleTargetIntervalConfig(const String &command)
+{
+  uint32_t seconds = command.substring(16).toInt();
+  if (seconds < 5) seconds = 5;
+  if (seconds > 600) seconds = 600;
+  setTargetMinInterval((unsigned long)seconds * 1000UL);
+  sendToSerial1(nodeId + ": TARGET_INTERVAL_ACK:" + String(seconds), true);
+  broadcastToTerminal("[MESH] Per-target interval set to " + String(seconds) + " s");
+}
+
 void processCommand(const String &command, const String &targetId = "")
 {
   Serial.printf("[DEBUG_RAW] Command length: %d, starts with: '%.30s'\n",
                 command.length(), command.c_str());
   if (command.startsWith("CONFIG_CHANNELS:"))          handleConfigChannels(command);
+  else if (command.startsWith("CONFIG_TARGETS_BLE:"))   handleConfigTargetsBLE(command);
   else if (command.startsWith("CONFIG_TARGETS:"))       handleConfigTargets(command);
   else if (command.startsWith("CONFIG_NODEID:"))        handleConfigNodeId(command);
   else if (command.startsWith("CONFIG_RSSI:"))          handleConfigRssi(command);
@@ -7091,6 +7188,7 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command.startsWith("PROBE_STOP"))            handleProbeStop(command);
   else if (command.startsWith("PROBE_HIT "))            handleProbeHit(command);
   else if (command.startsWith("STOP"))                  handleStop(command);
+  else if (command.startsWith("SETTIME:"))              handleSetTime(command);
   else if (command.startsWith("STATUS"))                handleStatus(command);
   else if (command.startsWith("VIBRATION_STATUS"))      handleVibrationStatus(command);
   else if (command == "VIBRATION_ON")                   handleVibrationOn(command);
@@ -7111,6 +7209,7 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command == "HB_ON")                          handleHbOn(command);
   else if (command == "HB_OFF")                         handleHbOff(command);
   else if (command.startsWith("HB_INTERVAL:"))          handleHbInterval(command);
+  else if (command.startsWith("TARGET_INTERVAL:"))      handleTargetIntervalConfig(command);
   else if (command == "RAW_BLE_ON")                     handleRawBleOn(command);
   else if (command == "RAW_BLE_OFF")                    handleRawBleOff(command);
   else if (command == "RAW_BLE_STATUS")                 handleRawBleStatus(command);

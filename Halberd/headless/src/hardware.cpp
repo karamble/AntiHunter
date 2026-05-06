@@ -297,11 +297,13 @@ void initializeHardware()
         Serial.println("[NVS] First boot - initializing all NVS keys");
         prefs.putBool("_init", true);
         prefs.putString("maclist", "");
+        prefs.putString("blelist", "");
         prefs.putString("allowlist", "");
         prefs.putString("nodeId", "");
         prefs.putString("channels", "1,6,11");
         prefs.putInt("scanMode", SCAN_BOTH);
         prefs.putULong("meshInterval", 5000);
+        prefs.putULong("targetInterval", 30000);
         prefs.putUInt("blRamSize", 400);
         prefs.putUInt("blSdMax", 50000);
         prefs.putUInt("absenceThresh", 120000);
@@ -331,6 +333,12 @@ void initializeHardware()
         meshSendInterval = 3000;
     }
     Serial.printf("[CONFIG] Mesh send interval: %lums\n", meshSendInterval);
+
+    PER_TARGET_MIN_INTERVAL = prefs.getULong("targetInterval", 30000);
+    if (PER_TARGET_MIN_INTERVAL < 5000 || PER_TARGET_MIN_INTERVAL > 600000) {
+        PER_TARGET_MIN_INTERVAL = 30000;
+    }
+    Serial.printf("[CONFIG] Per-target hit interval: %lums\n", PER_TARGET_MIN_INTERVAL);
     
     baselineRamCacheSize = prefs.getUInt("baselineRamSize", 400);
     baselineSdMaxDevices = prefs.getUInt("baselineSdMax", 50000);
@@ -440,6 +448,7 @@ void saveConfiguration() {
     configFile.printf(" \"scanMode\":%d,\n", currentScanMode);
     configFile.printf(" \"channels\":\"%s\",\n", channelsBuf);
     configFile.printf(" \"meshInterval\":%lu,\n", meshSendInterval);
+    configFile.printf(" \"targetInterval\":%lu,\n", PER_TARGET_MIN_INTERVAL);
     configFile.printf(" \"autoEraseEnabled\":%s,\n", autoEraseEnabled ? "true" : "false");
     configFile.printf(" \"autoEraseDelay\":%u,\n", autoEraseDelay);
     configFile.printf(" \"autoEraseCooldown\":%u,\n", autoEraseCooldown);
@@ -460,6 +469,7 @@ void saveConfiguration() {
     configFile.printf(" \"bleScanDuration\":%u,\n", rfConfig.bleScanDuration);
     configFile.printf(" \"globalRssiThreshold\":%d,\n", rfConfig.globalRssiThreshold);
     configFile.printf(" \"targets\":\"%s\",\n", prefs.getString("maclist", "").c_str());
+    configFile.printf(" \"bleTargets\":\"%s\",\n", prefs.getString("blelist", "").c_str());
     configFile.printf(" \"hbEnabled\":%s,\n", hbEnabled ? "true" : "false");
     configFile.printf(" \"hbInterval\":%u,\n", hbInterval / 60000);
     configFile.printf(" \"vibEnabled\":%s\n", vibrationEnabled ? "true" : "false");
@@ -608,6 +618,13 @@ void loadConfiguration() {
         }
     }
 
+    if (doc.containsKey("targetInterval") && doc["targetInterval"].is<unsigned long>()) {
+        unsigned long interval = doc["targetInterval"].as<unsigned long>();
+        if (interval >= 5000 && interval <= 600000) {
+            setTargetMinInterval(interval);
+        }
+    }
+
     if (doc.containsKey("targets") && doc["targets"].is<String>()) {
         String targets = doc["targets"].as<String>();
         if (targets.length() > 0) {
@@ -616,7 +633,19 @@ void loadConfiguration() {
             Serial.println("Target count: " + String(getTargetCount()));
         }
     }
-    
+
+    // BLE fingerprint targets — same shape as the WiFi targets import block
+    // above but skipping the duplicate prefs.putString write (saveBleTargetsList
+    // already persists to NVS internally; the WiFi block's extra putString is
+    // a pre-existing redundant write and should not be propagated here).
+    if (doc.containsKey("bleTargets") && doc["bleTargets"].is<String>()) {
+        String bleTargets = doc["bleTargets"].as<String>();
+        if (bleTargets.length() > 0) {
+            saveBleTargetsList(bleTargets);
+            Serial.println("BLE target count: " + String((unsigned)getBleTargetCount()));
+        }
+    }
+
     if (doc.containsKey("autoEraseEnabled")) {
         autoEraseEnabled = doc["autoEraseEnabled"].as<bool>();
         prefs.putBool("autoErase", autoEraseEnabled);
