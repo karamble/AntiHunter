@@ -28,6 +28,12 @@ const int MAX_RETRIES = 10;
 bool meshEnabled = true;
 bool hbEnabled = false;
 uint32_t hbInterval = 600000;
+// Default false: raw BLE forwarding consumes ~80 chars per device per scan
+// cycle on top of the existing DEVICE: lines. Enable per-deployment via the
+// RAW_BLE_ON mesh command. The auto-attach logic on the C2 side flips this
+// on for the duration of a DEVICE_SCAN_START so most operators never touch
+// it directly.
+bool rawBleMode = false;
 // Gates the VIBRATION TEXTMSG broadcasts in hardware.cpp (setup-mode + movement
 // detection sites). Detection still runs and logs to USB; only the mesh TX
 // is suppressed when false. Toggled by VIBRATION_ON / VIBRATION_OFF mesh
@@ -6430,6 +6436,31 @@ static void handleVibrationOff(const String &command)
   broadcastToTerminal("[VIB] Vibration broadcasts disabled");
 }
 
+static void handleRawBleOn(const String &command)
+{
+  (void)command;
+  rawBleMode = true;
+  prefs.putBool("rawBleMode", true);
+  sendToSerial1(getNodeId() + ": RAW_BLE_ACK:ON", true);
+  broadcastToTerminal("[RAW-BLE] Raw BLE forwarding enabled");
+}
+
+static void handleRawBleOff(const String &command)
+{
+  (void)command;
+  rawBleMode = false;
+  prefs.putBool("rawBleMode", false);
+  sendToSerial1(getNodeId() + ": RAW_BLE_ACK:OFF", true);
+  broadcastToTerminal("[RAW-BLE] Raw BLE forwarding disabled");
+}
+
+static void handleRawBleStatus(const String &command)
+{
+  (void)command;
+  String state = rawBleMode ? "ON" : "OFF";
+  sendToSerial1(getNodeId() + ": RAW_BLE_STATUS:" + state, true);
+}
+
 static void handleTriangulateStart(const String &command, const String &targetId)
 {
   String params = command.substring(18);
@@ -7080,6 +7111,9 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command == "HB_ON")                          handleHbOn(command);
   else if (command == "HB_OFF")                         handleHbOff(command);
   else if (command.startsWith("HB_INTERVAL:"))          handleHbInterval(command);
+  else if (command == "RAW_BLE_ON")                     handleRawBleOn(command);
+  else if (command == "RAW_BLE_OFF")                    handleRawBleOff(command);
+  else if (command == "RAW_BLE_STATUS")                 handleRawBleStatus(command);
 }
 
 void sendMeshCommand(const String &command) {

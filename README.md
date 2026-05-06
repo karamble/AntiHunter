@@ -532,6 +532,25 @@ Format: `NODE_ID: Time:YYYY-MM-DD_HH:MM:SS Temp:XX.XC [GPS:lat,lon]`
 </details>
 
 <details>
+<summary>Raw BLE Forwarding Commands</summary>
+
+When enabled, BLE scans emit a second wire frame per device that carries the
+full base64-encoded advertisement payload. The C2 reparses the AD structures
+server-side to identify manufacturer, service UUIDs, appearance, and so on.
+Raw mode roughly doubles bytes per detection so most operators leave it off
+and let the C2 auto-attach it for the duration of an active device scan.
+
+| Command | Parameters | Example |
+|---------|------------|---------|
+| `RAW_BLE_ON` | None | `@HB01 RAW_BLE_ON` |
+| `RAW_BLE_OFF` | None | `@HB01 RAW_BLE_OFF` |
+| `RAW_BLE_STATUS` | None | `@HB01 RAW_BLE_STATUS` |
+
+Wire frame: `NODE_ID: BLERAW:MAC RSSI CH BASE64_ADV` (typical length ~80 chars).
+
+</details>
+
+<details>
 <summary>Alert Message Formats</summary>
 
 | Alert Type | Format |

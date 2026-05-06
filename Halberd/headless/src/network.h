@@ -33,6 +33,12 @@ extern bool meshEnabled;
 extern bool hbEnabled;
 extern uint32_t hbInterval;
 extern bool vibrationEnabled;
+// rawBleMode gates the BLERAW: wire frame. When true, BLE scans emit one
+// BLERAW: <MAC> <RSSI> <CH> <BASE64-adv> frame per (MAC, payload-hash) pair
+// in addition to the legacy DEVICE: line. Toggled at runtime via the
+// RAW_BLE_ON / RAW_BLE_OFF mesh commands and persisted in NVS Preferences
+// under the key "rawBleMode".
+extern bool rawBleMode;
 
 // Mesh communication
 void initializeNetwork();

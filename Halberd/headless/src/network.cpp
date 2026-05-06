@@ -18,6 +18,10 @@ extern "C"
 bool meshEnabled = true;
 bool hbEnabled = false;
 uint32_t hbInterval = 600000;
+// Default false: raw BLE forwarding consumes ~80 chars per device per scan
+// cycle on top of the existing DEVICE: lines. Enable per-deployment via the
+// RAW_BLE_ON mesh command. Persisted in NVS under "rawBleMode".
+bool rawBleMode = false;
 // Gates the VIBRATION TEXTMSG broadcasts in hardware.cpp. See the matching
 // declaration in the full/ variant for the full rationale. Default true
 // preserves existing behaviour after a firmware bump.
@@ -656,6 +660,29 @@ static void handleVibrationOff(const String &command)
   saveConfiguration();
   Serial.println("[VIB] Vibration broadcasts DISABLED");
   sendToSerial1(nodeId + ": VIBRATION_OFF_ACK:OK", true);
+}
+
+static void handleRawBleOn(const String &command)
+{
+  (void)command;
+  rawBleMode = true;
+  prefs.putBool("rawBleMode", true);
+  sendToSerial1(getNodeId() + ": RAW_BLE_ACK:ON", true);
+}
+
+static void handleRawBleOff(const String &command)
+{
+  (void)command;
+  rawBleMode = false;
+  prefs.putBool("rawBleMode", false);
+  sendToSerial1(getNodeId() + ": RAW_BLE_ACK:OFF", true);
+}
+
+static void handleRawBleStatus(const String &command)
+{
+  (void)command;
+  String state = rawBleMode ? "ON" : "OFF";
+  sendToSerial1(getNodeId() + ": RAW_BLE_STATUS:" + state, true);
 }
 
 static void handleTriangulateStart(const String &command, const String &targetId)
@@ -1302,6 +1329,9 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command == "HB_ON")                        handleHbOn(command);
   else if (command == "HB_OFF")                       handleHbOff(command);
   else if (command.startsWith("HB_INTERVAL:"))        handleHbInterval(command);
+  else if (command == "RAW_BLE_ON")                   handleRawBleOn(command);
+  else if (command == "RAW_BLE_OFF")                  handleRawBleOff(command);
+  else if (command == "RAW_BLE_STATUS")               handleRawBleStatus(command);
 }
 
 void sendMeshCommand(const String &command) {
