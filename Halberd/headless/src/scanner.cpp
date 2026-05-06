@@ -53,6 +53,54 @@ uint32_t lastScanSecs = 0;
 bool lastScanForever = false;
 static std::map<String, String> apCache;
 static std::map<String, String> bleDeviceCache;
+// bleRawCache holds the raw advertisement payload (post-link-layer-header AD
+// structures, capped at 31 bytes for BLE 4.x legacy advertising) keyed by
+// MAC string. Populated by the BLE-scan branch when rawBleMode is true. The
+// mesh-update loop reads it to build BLERAW: frames. Cleared at scan start.
+static std::map<String, std::vector<uint8_t>> bleRawCache;
+
+// MESH_TX_PACING_MS is the per-message inter-write delay applied between
+// consecutive sendToSerial1 calls inside the periodic mesh-update loop and
+// the duration-bound final-batch flush. Without this gap, the Heltec's
+// Meshtastic SerialModule batches our rapid Serial1.println writes into a
+// single LoRa TEXTMSG and corrupts the leading byte of each batch.
+//
+// Initial validation pacing is 3000 ms (matches SerialRateLimiter's
+// REFILL_INTERVAL window). Once the pipeline is proven end-to-end, walk
+// this down (1500 -> 1000 -> 750 -> 500) to find the floor where Heltec
+// batching reappears, then back off one notch.
+static const TickType_t MESH_TX_PACING_MS = pdMS_TO_TICKS(3000);
+
+// base64Encode produces a no-wrap base64 string of n bytes from data. Output
+// uses standard alphabet (A-Z, a-z, 0-9, +, /) with '=' padding. Used to
+// pack raw BLE advertisement bytes into the BLERAW: text frame.
+static String base64Encode(const uint8_t *data, size_t n) {
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    String out;
+    out.reserve(((n + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 3 <= n) {
+        uint32_t v = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | uint32_t(data[i + 2]);
+        out += alphabet[(v >> 18) & 0x3F];
+        out += alphabet[(v >> 12) & 0x3F];
+        out += alphabet[(v >> 6) & 0x3F];
+        out += alphabet[v & 0x3F];
+        i += 3;
+    }
+    if (i < n) {
+        uint32_t v = uint32_t(data[i]) << 16;
+        if (i + 1 < n) v |= uint32_t(data[i + 1]) << 8;
+        out += alphabet[(v >> 18) & 0x3F];
+        out += alphabet[(v >> 12) & 0x3F];
+        if (i + 1 < n) {
+            out += alphabet[(v >> 6) & 0x3F];
+            out += '=';
+        } else {
+            out += "==";
+        }
+    }
+    return out;
+}
 
 static portMUX_TYPE rfConfigMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -722,6 +770,7 @@ void snifferScanTask(void *pv)
     hitsLog.clear();
     apCache.clear();
     bleDeviceCache.clear();
+    bleRawCache.clear();
     totalHits = 0;
     framesSeen = 0;
     bleFramesSeen = 0;
@@ -844,6 +893,24 @@ void snifferScanTask(void *pv)
                         continue;
                     }
 
+                    // Capture raw advertisement payload for B: frames when raw
+                    // mode is on. Decoupled from the first-sight check below
+                    // so devices that get into bleDeviceCache *before*
+                    // RAW_BLE_ON arrives still produce a B: frame on a later
+                    // callback fire — the auto-attached RAW_BLE_ON can land
+                    // 3-8 s after DEVICE_SCAN_START and BLE devices detected
+                    // in that pre-RAW window were silently dropping their raw
+                    // payload otherwise. Capped at 31 bytes (BLE 4.x AD
+                    // structures size limit) and at MAX_BLE_CACHE entries.
+                    if (rawBleMode && bleRawCache.find(macStr) == bleRawCache.end() &&
+                        bleRawCache.size() < MAX_BLE_CACHE) {
+                        std::vector<uint8_t> payload = device->getPayload();
+                        if (payload.size() > 31) payload.resize(31);
+                        if (!payload.empty()) {
+                            bleRawCache[macStr] = std::move(payload);
+                        }
+                    }
+
                     if (bleDeviceCache.find(macStr) == bleDeviceCache.end())
                     {
                         String name = device->haveName() ? String(device->getName().c_str()) : "Unknown";
@@ -863,7 +930,7 @@ void snifferScanTask(void *pv)
                             bleDeviceCache[macStr] = cleanName;
                         }
                         uniqueMacs.insert(macStr);
-                        
+
                         uint8_t mac[6];
                         if (parseMac6(macStr, mac))
                         {
@@ -921,7 +988,7 @@ void snifferScanTask(void *pv)
 
                 if (transmittedDevices.find(macStr) == transmittedDevices.end())
                 {
-                    String deviceMsg = getNodeId() + ": DEVICE:" + macStr + " W ";
+                    String deviceMsg = getNodeId() + ": D:" + macStr + " W ";
 
                     int8_t bestRssi = -128;
                     uint8_t bestCh = 0;
@@ -948,6 +1015,10 @@ void snifferScanTask(void *pv)
                             if (sentThisCycle % 3 == 0) {
                                 rateLimiter.refillTokens();
                             }
+                            // Pace consecutive Serial1 writes so the Heltec's
+                            // Meshtastic SerialModule packetises each line as
+                            // its own TEXTMSG.
+                            vTaskDelay(MESH_TX_PACING_MS);
                         }
                     }
                 }
@@ -962,7 +1033,7 @@ void snifferScanTask(void *pv)
 
                 if (transmittedDevices.find(macStr) == transmittedDevices.end())
                 {
-                    String deviceMsg = getNodeId() + ": DEVICE:" + macStr + " B ";
+                    String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
 
                     int8_t bestRssi = -128;
                     for (const auto& hit : hitsLog) {
@@ -985,6 +1056,38 @@ void snifferScanTask(void *pv)
                             // Refill tokens periodically to maintain throughput
                             if (sentThisCycle % 3 == 0) {
                                 rateLimiter.refillTokens();
+                            }
+                            vTaskDelay(MESH_TX_PACING_MS);
+                        }
+                    }
+
+                    // Emit B: (raw advertisement) alongside D: when raw mode
+                    // is on. The C2-side classifier reparses the AD structures
+                    // from the base64 payload. Channel field omitted (always 0
+                    // in current capture path); the diginode-cc parser
+                    // defaults it.
+                    //
+                    // Slot guard removed: the outer for-loop's top
+                    // canSendInSlot+break pair already gates entry to a slot,
+                    // and the 3000ms MESH_TX_PACING_MS plus the rateLimiter
+                    // token bucket are the actual flow control. Re-checking
+                    // canSendInSlot here was rejecting B: emits because the
+                    // pacing delay between D: and B: pushed past the slot
+                    // guard, dropping the raw frame entirely.
+                    if (rawBleMode) {
+                        auto rawIt = bleRawCache.find(macStr);
+                        if (rawIt != bleRawCache.end() && !rawIt->second.empty()) {
+                            String rawMsg = getNodeId() + ": B:" + macStr + " " +
+                                            String(bestRssi) + " " +
+                                            base64Encode(rawIt->second.data(), rawIt->second.size());
+                            if (rawMsg.length() <= MAX_MESH_SIZE) {
+                                if (sendToSerial1(rawMsg, true)) {
+                                    sentThisCycle++;
+                                    if (sentThisCycle % 3 == 0) {
+                                        rateLimiter.refillTokens();
+                                    }
+                                    vTaskDelay(MESH_TX_PACING_MS);
+                                }
                             }
                         }
                     }
@@ -1216,7 +1319,7 @@ void snifferScanTask(void *pv)
             }
             if (transmittedDevices.find(entry.first) == transmittedDevices.end())
             {
-                String deviceMsg = getNodeId() + ": DEVICE:" + entry.first + " W ";
+                String deviceMsg = getNodeId() + ": D:" + entry.first + " W ";
                 int8_t bestRssi = -128;
                 uint8_t bestCh = 0;
                 for (const auto& hit : hitsLog) {
@@ -1234,6 +1337,9 @@ void snifferScanTask(void *pv)
                 if (deviceMsg.length() <= MAX_MESH_SIZE) {
                     if (sendToSerial1(deviceMsg, true)) {
                         transmittedDevices.insert(entry.first);
+                        // Pace the final-batch flush so the Heltec's
+                        // SerialModule packetises each line as its own TEXTMSG.
+                        vTaskDelay(MESH_TX_PACING_MS);
                     }
                 }
             }
@@ -1249,11 +1355,12 @@ void snifferScanTask(void *pv)
             }
             if (transmittedDevices.find(entry.first) == transmittedDevices.end())
             {
-                String deviceMsg = getNodeId() + ": DEVICE:" + entry.first + " B ";
+                String macStr = entry.first;
+                String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
                 int8_t bestRssi = -128;
                 for (const auto& hit : hitsLog) {
                     String hitMac = macFmt6(hit.mac);
-                    if (hitMac == entry.first && hit.isBLE && hit.rssi > bestRssi) {
+                    if (hitMac == macStr && hit.isBLE && hit.rssi > bestRssi) {
                         bestRssi = hit.rssi;
                     }
                 }
@@ -1263,7 +1370,36 @@ void snifferScanTask(void *pv)
                 }
                 if (deviceMsg.length() <= MAX_MESH_SIZE) {
                     if (sendToSerial1(deviceMsg, true)) {
-                        transmittedDevices.insert(entry.first);
+                        transmittedDevices.insert(macStr);
+                        vTaskDelay(MESH_TX_PACING_MS);
+                    }
+                }
+
+                // Emit B: alongside D: in the final-batch flush too. Without
+                // this block, BLE devices that get drained only after the
+                // scan window ends never produce a raw-advertisement frame
+                // even when rawBleMode is on, because the periodic loop's
+                // B: emit doesn't see them.
+                //
+                // Slot guard removed for the B: emit — the for-loop's top
+                // canSendInSlot/waitForSlot pair already gates entry to a
+                // slot, and the 3000ms MESH_TX_PACING_MS between consecutive
+                // sendToSerial1 calls plus the rateLimiter token bucket
+                // handle flow control. Re-checking canSendInSlot after the
+                // pacing delay was rejecting B: emits because the delay
+                // pushed past the slot guard, dropping the raw frame
+                // entirely.
+                if (rawBleMode) {
+                    auto rawIt = bleRawCache.find(macStr);
+                    if (rawIt != bleRawCache.end() && !rawIt->second.empty()) {
+                        String rawMsg = getNodeId() + ": B:" + macStr + " " +
+                                        String(bestRssi) + " " +
+                                        base64Encode(rawIt->second.data(), rawIt->second.size());
+                        if (rawMsg.length() <= MAX_MESH_SIZE) {
+                            if (sendToSerial1(rawMsg, true)) {
+                                vTaskDelay(MESH_TX_PACING_MS);
+                            }
+                        }
                     }
                 }
             }
