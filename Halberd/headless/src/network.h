@@ -52,3 +52,7 @@ String getNodeId();
 extern unsigned long meshSendInterval;
 void setMeshSendInterval(unsigned long interval);
 unsigned long getMeshSendInterval();
+
+extern unsigned long PER_TARGET_MIN_INTERVAL;
+void setTargetMinInterval(unsigned long ms);
+unsigned long getTargetMinInterval();

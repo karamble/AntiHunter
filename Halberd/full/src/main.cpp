@@ -223,18 +223,12 @@ void loop() {
     static unsigned long lastGPSPollBatterySaver = 0;  // cppcheck-suppress variableScope
     static unsigned long lastHeapCheck = 0;
 
-    // Handle serial time setting (always process, even in battery saver)
-    if (Serial.available()) {
-        String cmd = Serial.readStringUntil('\n');
-        cmd.trim();
-        if (cmd.startsWith("SETTIME:")) {
-            time_t epoch = cmd.substring(8).toInt();
-            if (epoch > 1609459200 && setRTCTimeFromEpoch(epoch)) {
-                Serial.println("OK: RTC set");
-                broadcastToTerminal("[RTC] OK: RTC set");
-            }
-        }
-    }
+    // SETTIME used to be consumed here via Serial.readStringUntil('\n')
+    // before processUSBToMesh() got a chance to see the buffer. Side effect:
+    // every USB-typed command that wasn't SETTIME (CONFIG_TARGETS_BLE,
+    // SCAN_START, STATUS, STOP, ...) was silently eaten and dropped.
+    // SETTIME now lives in processCommand alongside every other command
+    // and reaches handleSetTime via processUSBToMesh → processMeshMessage.
 
     // Battery saver mode - minimal operations
     if (batterySaverEnabled) {
