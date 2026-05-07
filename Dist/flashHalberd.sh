@@ -2,10 +2,14 @@
 set -e
 
 ESPTOOL_REPO="https://github.com/alphafox02/esptool"
-FIRMWARE_OPTIONS=(
-    "Halberd AP (With WiFi AP) - v0.9.4 Beta :https://github.com/karamble/halberd/raw/refs/heads/main/Dist/antihunter-full-v0.9.4.bin"
-    "Halberd Headless - (Mesh only) v0.9.4 Beta:https://github.com/karamble/halberd/raw/refs/heads/main/Dist/antihunter-headless-v0.9.4.bin"
-)
+
+# No prebuilt halberd firmware URLs yet. The first halberd release will
+# publish halberd-full and halberd-headless artifacts via
+# .github/workflows/release.yml. Until then, build locally with `pio run`
+# and pass the resulting firmware.bin via `--file`. Re-populate this array
+# once releases exist, e.g.:
+#   "Halberd Full:https://github.com/karamble/halberd/releases/download/<tag>/halberd-full-<tag>.bin"
+FIRMWARE_OPTIONS=()
 ESPTOOL_DIR="esptool"
 CUSTOM_BIN=""
 CONFIG_MODE=false
@@ -191,9 +195,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -l|--list)
             echo "Available firmware options:"
-            for option in "${FIRMWARE_OPTIONS[@]}"; do
-                echo "  ${option%%:*}"
-            done
+            if [ "${#FIRMWARE_OPTIONS[@]}" -eq 0 ]; then
+                echo "  (none) - no prebuilt halberd releases published yet."
+                echo "  Build locally with 'pio run' and pass --file <path>."
+            else
+                for option in "${FIRMWARE_OPTIONS[@]}"; do
+                    echo "  ${option%%:*}"
+                done
+            fi
             exit 0
             ;;
         *)
@@ -259,6 +268,12 @@ if [ -n "$CUSTOM_BIN" ]; then
         exit 1
     fi
 else
+    if [ "${#FIRMWARE_OPTIONS[@]}" -eq 0 ]; then
+        echo "No prebuilt halberd firmware releases are published yet."
+        echo "Build locally with 'pio run' and re-run with --file .pio/build/<env>/firmware.bin,"
+        echo "or pick the option below to point at any custom .bin."
+        echo ""
+    fi
     declare -a options_array
     for i in "${!FIRMWARE_OPTIONS[@]}"; do
         echo "$((i+1)). ${FIRMWARE_OPTIONS[$i]%%:*}"
