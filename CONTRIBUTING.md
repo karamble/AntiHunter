@@ -51,3 +51,16 @@ pio run
 
 ### Questions
 Open a discussion on GitHub Discussions for questions.
+
+## License boundary
+
+Halberd is a hard fork of AntiHunter at commit `4680ea2` (tag `v-last-mit`),
+the last commit before upstream relicensed to AGPL-3.0. Halberd continues
+under the MIT License.
+
+Do not cherry-pick, merge, or copy code from `lukeswitz/AntiHunter` past
+that commit. Such commits are AGPL-licensed and incompatible with this
+project. If a useful fix has landed upstream post-relicense, reimplement
+it from the issue or bug description. Do not copy the patch.
+
+Bug reports referencing upstream issues are welcome.

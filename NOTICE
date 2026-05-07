@@ -1,0 +1,15 @@
+Halberd
+=======
+
+This project originated as a fork of AntiHunter
+(https://github.com/lukeswitz/AntiHunter), pinned at commit 4680ea2
+dated 2026-04-29, the last commit released under the MIT License
+before upstream relicensed to AGPL-3.0 on 2026-04-30.
+
+All work in this repository is licensed under the MIT License.
+Original copyright notices are preserved per MIT terms.
+
+This project is not affiliated with the current AntiHunter project.
+Contributions derived from AntiHunter commits dated after 2026-04-30
+will not be accepted, as those are licensed under terms incompatible
+with this project's MIT license.

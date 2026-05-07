@@ -88,7 +88,7 @@ We acknowledge security researchers who responsibly disclose issues, subject to 
 
 ## Need Help?
 
-- For policy clarifications, contact via repository owner's GitHub [profile](https://github.com/lukeswitz) or open a draft advisory.
+- For policy clarifications, contact via repository owner's GitHub [profile](https://github.com/karamble) or open a draft advisory.
 - For operational questions, consult firmware documentation first.
 - For incidents involving deployed devices, also notify your organization's security contacts - this is open-source firmware and you remain responsible for your device security posture.
 
