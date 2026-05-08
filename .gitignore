@@ -20,3 +20,5 @@ demo.html
 # Per-user Claude Code state. Never commit.
 CLAUDE.md
 .claude/
+
+hw/pcb/
