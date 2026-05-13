@@ -61,6 +61,26 @@ struct link_ieee_scan_req;
 typedef void (*link_ieee_scan_req_cb)(const struct link_ieee_scan_req *req);
 void link_register_ieee_scan_req(link_ieee_scan_req_cb cb);
 
+// Expansion bus (stage 7). Response helpers + REQ-callback registration.
+struct link_i2c_read_req;
+struct link_i2c_read_resp;
+struct link_i2c_write_req;
+struct link_i2c_write_resp;
+struct link_gpio_req;
+struct link_gpio_resp;
+
+void link_send_i2c_read_resp(const struct link_i2c_read_resp *resp);
+void link_send_i2c_write_resp(const struct link_i2c_write_resp *resp);
+void link_send_gpio_resp(const struct link_gpio_resp *resp);
+
+typedef void (*link_i2c_read_req_cb)(const struct link_i2c_read_req *req);
+typedef void (*link_i2c_write_req_cb)(const struct link_i2c_write_req *req);
+typedef void (*link_gpio_req_cb)(const struct link_gpio_req *req);
+
+void link_register_i2c_read_req(link_i2c_read_req_cb cb);
+void link_register_i2c_write_req(link_i2c_write_req_cb cb);
+void link_register_gpio_req(link_gpio_req_cb cb);
+
 #ifdef __cplusplus
 }
 #endif

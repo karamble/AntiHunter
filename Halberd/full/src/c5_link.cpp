@@ -41,6 +41,18 @@ volatile uint32_t s_wifi_done_scan_id = 0;
 volatile uint32_t s_ble_done_scan_id = 0;
 volatile uint32_t s_ieee_done_scan_id = 0;
 
+// Expansion-bus single-outstanding-op slot (stage 7). A caller serialises
+// via s_exp_lock, fills in s_exp_request_id, sends a *_REQ, then waits on
+// s_exp_done. Handlers below populate the response payload via the
+// appropriate s_exp_*_resp slot before signalling s_exp_done.
+SemaphoreHandle_t s_exp_lock = nullptr;
+SemaphoreHandle_t s_exp_done = nullptr;
+volatile uint32_t s_exp_request_id = 0;
+struct link_i2c_read_resp  s_exp_i2c_read_resp;
+struct link_i2c_write_resp s_exp_i2c_write_resp;
+struct link_gpio_resp      s_exp_gpio_resp;
+volatile uint8_t           s_exp_expected_type = 0;  // wire LINK_MSG_*_RESP we're waiting for
+
 void send_frame(uint8_t type, uint8_t seq,
                 const uint8_t *payload, size_t len) {
     if (!s_initialized || s_tx_lock == nullptr) {
@@ -239,6 +251,42 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         }
         break;
 
+    case LINK_MSG_I2C_READ_RESP:
+        if (len == sizeof(struct link_i2c_read_resp)) {
+            struct link_i2c_read_resp r;
+            memcpy(&r, payload, sizeof(r));
+            if (s_exp_expected_type == LINK_MSG_I2C_READ_RESP &&
+                r.request_id == s_exp_request_id) {
+                memcpy(&s_exp_i2c_read_resp, &r, sizeof(r));
+                xSemaphoreGive(s_exp_done);
+            }
+        }
+        break;
+
+    case LINK_MSG_I2C_WRITE_RESP:
+        if (len == sizeof(struct link_i2c_write_resp)) {
+            struct link_i2c_write_resp r;
+            memcpy(&r, payload, sizeof(r));
+            if (s_exp_expected_type == LINK_MSG_I2C_WRITE_RESP &&
+                r.request_id == s_exp_request_id) {
+                memcpy(&s_exp_i2c_write_resp, &r, sizeof(r));
+                xSemaphoreGive(s_exp_done);
+            }
+        }
+        break;
+
+    case LINK_MSG_GPIO_RESP:
+        if (len == sizeof(struct link_gpio_resp)) {
+            struct link_gpio_resp r;
+            memcpy(&r, payload, sizeof(r));
+            if (s_exp_expected_type == LINK_MSG_GPIO_RESP &&
+                r.request_id == s_exp_request_id) {
+                memcpy(&s_exp_gpio_resp, &r, sizeof(r));
+                xSemaphoreGive(s_exp_done);
+            }
+        }
+        break;
+
     case LINK_MSG_STATUS:
         if (len == sizeof(struct link_status_payload)) {
             struct link_status_payload p;
@@ -289,6 +337,8 @@ void c5LinkInit(void) {
     s_wifi_queue = xQueueCreate(C5_LINK_WIFI_QUEUE_LEN, sizeof(C5WifiAp));
     s_ble_queue  = xQueueCreate(C5_LINK_BLE_QUEUE_LEN,  sizeof(C5BleAdv));
     s_ieee_queue = xQueueCreate(C5_LINK_IEEE_QUEUE_LEN, sizeof(C5Ieee802154Detection));
+    s_exp_lock = xSemaphoreCreateMutex();
+    s_exp_done = xSemaphoreCreateBinary();
     link_decoder_init(&s_decoder);
 
     s_uart.setRxBufferSize(1024);
@@ -395,6 +445,129 @@ uint32_t c5LinkIeeeTakeDoneScanId(void) {
     uint32_t id = s_ieee_done_scan_id;
     if (id != 0) s_ieee_done_scan_id = 0;
     return id;
+}
+
+// ── Expansion bus: synchronous request/response (stage 7) ──────────────────
+
+// Internal helper: serialise, set up the pending slot, send the request,
+// wait for the matching response or timeout. Returns true on success
+// (response landed); false on timeout or link-not-ready. Caller reads
+// the appropriate s_exp_*_resp slot after success.
+static bool expExchange(uint8_t req_type, uint8_t resp_type,
+                        const uint8_t *req_bytes, size_t req_len,
+                        uint32_t request_id, uint32_t timeout_ms) {
+    if (!s_initialized || s_exp_lock == nullptr || s_exp_done == nullptr) {
+        return false;
+    }
+    if (xSemaphoreTake(s_exp_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return false;
+    }
+
+    // Drain any stale "done" signal from a previous cancelled wait.
+    xSemaphoreTake(s_exp_done, 0);
+
+    s_exp_request_id    = request_id;
+    s_exp_expected_type = resp_type;
+
+    send_frame(req_type, s_seq++, req_bytes, req_len);
+
+    bool ok = (xSemaphoreTake(s_exp_done, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+
+    s_exp_expected_type = 0;
+    s_exp_request_id    = 0;
+    xSemaphoreGive(s_exp_lock);
+    return ok;
+}
+
+static uint32_t next_request_id() {
+    static uint32_t s_next = 1;
+    return s_next++;
+}
+
+int c5LinkI2cRead(uint8_t addr, int reg_addr, uint8_t *buf, uint8_t len,
+                  uint32_t timeout_ms) {
+    if (buf == nullptr || len == 0 || len > LINK_I2C_DATA_MAX) {
+        return /*BAD_PARAM*/ 4;
+    }
+    struct link_i2c_read_req req;
+    memset(&req, 0, sizeof(req));
+    req.request_id  = next_request_id();
+    req.bus         = 0;
+    req.device_addr = addr;
+    if (reg_addr >= 0 && reg_addr <= 0xFF) {
+        req.reg         = (uint8_t)reg_addr;
+        req.reg_present = 1;
+    }
+    req.read_len = len;
+
+    if (!expExchange(LINK_MSG_I2C_READ_REQ, LINK_MSG_I2C_READ_RESP,
+                     (const uint8_t *)&req, sizeof(req), req.request_id, timeout_ms)) {
+        return /*TIMEOUT*/ 2;
+    }
+    if (s_exp_i2c_read_resp.status == 0 /*OK*/) {
+        uint8_t copy = s_exp_i2c_read_resp.read_len > len ? len : s_exp_i2c_read_resp.read_len;
+        memcpy(buf, s_exp_i2c_read_resp.data, copy);
+    }
+    return s_exp_i2c_read_resp.status;
+}
+
+int c5LinkI2cWrite(uint8_t addr, int reg_addr,
+                   const uint8_t *data, uint8_t len, uint32_t timeout_ms) {
+    if (len > LINK_I2C_DATA_MAX) {
+        return /*BAD_PARAM*/ 4;
+    }
+    if (len > 0 && data == nullptr) {
+        return /*BAD_PARAM*/ 4;
+    }
+    struct link_i2c_write_req req;
+    memset(&req, 0, sizeof(req));
+    req.request_id  = next_request_id();
+    req.bus         = 0;
+    req.device_addr = addr;
+    if (reg_addr >= 0 && reg_addr <= 0xFF) {
+        req.reg         = (uint8_t)reg_addr;
+        req.reg_present = 1;
+    }
+    req.data_len = len;
+    if (len > 0) memcpy(req.data, data, len);
+
+    if (!expExchange(LINK_MSG_I2C_WRITE_REQ, LINK_MSG_I2C_WRITE_RESP,
+                     (const uint8_t *)&req, sizeof(req), req.request_id, timeout_ms)) {
+        return /*TIMEOUT*/ 2;
+    }
+    return s_exp_i2c_write_resp.status;
+}
+
+static int gpioOp(uint8_t pin_index, uint8_t op, uint8_t mode, uint8_t value,
+                  uint8_t *out_value, uint32_t timeout_ms) {
+    if (pin_index >= LINK_EXP_GPIO_COUNT) return /*BAD_PARAM*/ 4;
+    struct link_gpio_req req;
+    memset(&req, 0, sizeof(req));
+    req.request_id = next_request_id();
+    req.pin_index  = pin_index;
+    req.op         = op;
+    req.mode       = mode;
+    req.value      = value;
+
+    if (!expExchange(LINK_MSG_GPIO_REQ, LINK_MSG_GPIO_RESP,
+                     (const uint8_t *)&req, sizeof(req), req.request_id, timeout_ms)) {
+        return /*TIMEOUT*/ 2;
+    }
+    if (out_value) *out_value = s_exp_gpio_resp.value;
+    return s_exp_gpio_resp.status;
+}
+
+int c5LinkGpioConfig(uint8_t pin_index, uint8_t mode, uint32_t timeout_ms) {
+    return gpioOp(pin_index, LINK_GPIO_OP_CONFIG, mode, 0, nullptr, timeout_ms);
+}
+
+int c5LinkGpioWrite(uint8_t pin_index, bool value, uint32_t timeout_ms) {
+    return gpioOp(pin_index, LINK_GPIO_OP_WRITE, 0, value ? 1 : 0, nullptr, timeout_ms);
+}
+
+int c5LinkGpioRead(uint8_t pin_index, uint8_t *out_value, uint32_t timeout_ms) {
+    if (out_value == nullptr) return /*BAD_PARAM*/ 4;
+    return gpioOp(pin_index, LINK_GPIO_OP_READ, 0, 0, out_value, timeout_ms);
 }
 
 void c5LinkSendPing(void) {

@@ -5,6 +5,7 @@ idf_component_register(
          "wifi.c"
          "ble.c"
          "ieee802154.c"
+         "exp.c"
          "../../shared/link_codec.c"
     INCLUDE_DIRS "."
                  "../../shared"

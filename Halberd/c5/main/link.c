@@ -115,6 +115,32 @@ void link_send_ieee_scan_done(const struct link_ieee_scan_done *done) {
                (const uint8_t *)done, sizeof(*done));
 }
 
+static link_i2c_read_req_cb  s_i2c_read_req_cb;
+static link_i2c_write_req_cb s_i2c_write_req_cb;
+static link_gpio_req_cb      s_gpio_req_cb;
+
+void link_register_i2c_read_req(link_i2c_read_req_cb cb)   { s_i2c_read_req_cb  = cb; }
+void link_register_i2c_write_req(link_i2c_write_req_cb cb) { s_i2c_write_req_cb = cb; }
+void link_register_gpio_req(link_gpio_req_cb cb)           { s_gpio_req_cb      = cb; }
+
+void link_send_i2c_read_resp(const struct link_i2c_read_resp *resp) {
+    if (!resp) return;
+    send_frame(LINK_MSG_I2C_READ_RESP, s_seq++,
+               (const uint8_t *)resp, sizeof(*resp));
+}
+
+void link_send_i2c_write_resp(const struct link_i2c_write_resp *resp) {
+    if (!resp) return;
+    send_frame(LINK_MSG_I2C_WRITE_RESP, s_seq++,
+               (const uint8_t *)resp, sizeof(*resp));
+}
+
+void link_send_gpio_resp(const struct link_gpio_resp *resp) {
+    if (!resp) return;
+    send_frame(LINK_MSG_GPIO_RESP, s_seq++,
+               (const uint8_t *)resp, sizeof(*resp));
+}
+
 void link_send_status(void) {
     const uint32_t errs = s_decoder.stats.bad_crc + s_decoder.stats.bad_length +
                           s_decoder.stats.short_frame + s_decoder.stats.overflow;
@@ -192,6 +218,30 @@ static void on_frame(void *ctx, uint8_t type, uint8_t seq,
         } else {
             ESP_LOGW(TAG, "IEEE_SCAN_REQ seq=%u len=%u cb=%p — dropped",
                      seq, (unsigned)len, s_ieee_scan_req_cb);
+        }
+        break;
+
+    case LINK_MSG_I2C_READ_REQ:
+        if (len == sizeof(struct link_i2c_read_req) && s_i2c_read_req_cb) {
+            struct link_i2c_read_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_i2c_read_req_cb(&req);
+        }
+        break;
+
+    case LINK_MSG_I2C_WRITE_REQ:
+        if (len == sizeof(struct link_i2c_write_req) && s_i2c_write_req_cb) {
+            struct link_i2c_write_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_i2c_write_req_cb(&req);
+        }
+        break;
+
+    case LINK_MSG_GPIO_REQ:
+        if (len == sizeof(struct link_gpio_req) && s_gpio_req_cb) {
+            struct link_gpio_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_gpio_req_cb(&req);
         }
         break;
 

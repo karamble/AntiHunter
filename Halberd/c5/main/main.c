@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 
 #include "ble.h"
+#include "exp.h"
 #include "gps.h"
 #include "hardware.h"
 #include "ieee802154.h"
@@ -25,7 +26,7 @@ static const char *TAG = "halberd-c5";
 
 void app_main(void) {
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, " Halberd C5 firmware — stage 6 (802.15.4 sniffer)");
+    ESP_LOGI(TAG, " Halberd C5 firmware — stage 7 (expansion bus)");
     ESP_LOGI(TAG, " feat/c5-firmware, ESP-IDF " IDF_VER);
     ESP_LOGI(TAG, "================================================");
 
@@ -63,11 +64,13 @@ void app_main(void) {
     wifi_init();
     ble_init();
     ieee802154_init();
+    exp_init();
 
     // Periodic housekeeping: status beacon + decoder stats every 30 s. The
     // link task itself fires a PING every 5 s (see link.c); the GPS task
-    // pushes a GPS_FIX frame every 1 s (see gps.c); the Wi-Fi, BLE, and
-    // 802.15.4 scan tasks sit idle until a *_SCAN_REQ arrives.
+    // pushes a GPS_FIX frame every 1 s (see gps.c); the Wi-Fi, BLE,
+    // 802.15.4, and expansion-bus handlers run on demand off the link
+    // dispatcher.
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         link_log_stats();

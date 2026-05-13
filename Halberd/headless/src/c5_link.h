@@ -130,6 +130,36 @@ bool c5LinkIeeeScanStart(uint32_t scan_id,
 bool c5LinkIeeeDrainResult(struct C5Ieee802154Detection *out);
 uint32_t c5LinkIeeeTakeDoneScanId(void);
 
+// ── Expansion bus API (stage 7) ────────────────────────────────────────────
+// Synchronous I²C + GPIO ops against the C5's expansion bus. Each call
+// blocks until the C5 responds or the timeout elapses; only one
+// expansion op may be in flight at a time (the implementation serialises).
+//
+// Return values: status enum (0=OK, 1=NACK, 2=TIMEOUT, 3=BUSY, 4=BAD_PARAM,
+// 5=NOT_READY). Synonymous with link_exp_status on the wire.
+
+// Read `len` bytes from device `addr`. If `reg_addr` is non-negative,
+// the C5 writes that register byte before the repeated-start read.
+// Pass -1 to skip the register write.
+// Returns the wire status code; 0 = OK and `buf` is populated.
+int c5LinkI2cRead(uint8_t addr, int reg_addr, uint8_t *buf, uint8_t len,
+                  uint32_t timeout_ms);
+
+// Write `len` bytes (optionally prefixed with a register byte) to device
+// `addr`. Pass reg_addr = -1 for raw writes.
+int c5LinkI2cWrite(uint8_t addr, int reg_addr,
+                   const uint8_t *data, uint8_t len, uint32_t timeout_ms);
+
+// Configure an EXP_GPIO pin (index 0..4 = EXP_GPIO0..4). `mode` is a
+// link_gpio_mode value (0=INPUT, 1=OUTPUT, 2=INPUT_PULLUP, …).
+int c5LinkGpioConfig(uint8_t pin_index, uint8_t mode, uint32_t timeout_ms);
+
+// Set the output level on an EXP_GPIO pin previously configured as output.
+int c5LinkGpioWrite(uint8_t pin_index, bool value, uint32_t timeout_ms);
+
+// Read the input level. On success, *out_value is 0 or 1.
+int c5LinkGpioRead(uint8_t pin_index, uint8_t *out_value, uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

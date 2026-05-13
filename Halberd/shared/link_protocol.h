@@ -30,6 +30,12 @@ enum link_msg_type {
     LINK_MSG_IEEE_SCAN_REQ   = 0x40,  // S3 → C5, kick an IEEE 802.15.4 scan
     LINK_MSG_IEEE_DETECTION  = 0x41,  // C5 → S3, one per parsed 802.15.4 frame
     LINK_MSG_IEEE_SCAN_DONE  = 0x42,  // C5 → S3, end of an 802.15.4 scan
+    LINK_MSG_I2C_READ_REQ    = 0x50,  // S3 → C5, read N bytes from a device
+    LINK_MSG_I2C_READ_RESP   = 0x51,  // C5 → S3, result of an I2C read
+    LINK_MSG_I2C_WRITE_REQ   = 0x52,  // S3 → C5, write N bytes to a device
+    LINK_MSG_I2C_WRITE_RESP  = 0x53,  // C5 → S3, ack of an I2C write
+    LINK_MSG_GPIO_REQ        = 0x60,  // S3 → C5, configure / write / read EXP_GPIOn
+    LINK_MSG_GPIO_RESP       = 0x61,  // C5 → S3, result of a GPIO op
     LINK_MSG_STATUS          = 0xF0,  // periodic health beacon (sender-initiated)
     LINK_MSG_LOG             = 0xFE,  // forwarded log line (C5 → S3, future stage)
 };
@@ -86,6 +92,32 @@ enum link_ieee_frame_type {
     LINK_IEEE_FRAME_MULTIPURP  = 5,
     LINK_IEEE_FRAME_FRAGMENT   = 6,
     LINK_IEEE_FRAME_EXTENDED   = 7,
+};
+
+// Status codes returned in I²C / GPIO response frames.
+enum link_exp_status {
+    LINK_EXP_STATUS_OK         = 0,
+    LINK_EXP_STATUS_NACK       = 1,  // I²C ACK never came (no device at addr)
+    LINK_EXP_STATUS_TIMEOUT    = 2,
+    LINK_EXP_STATUS_BUSY       = 3,
+    LINK_EXP_STATUS_BAD_PARAM  = 4,  // bad addr / length / pin index
+    LINK_EXP_STATUS_NOT_READY  = 5,  // bus not initialised
+};
+
+// GPIO operations carried in link_gpio_req.op.
+enum link_gpio_op {
+    LINK_GPIO_OP_CONFIG = 0,         // set mode for pin_index
+    LINK_GPIO_OP_WRITE  = 1,         // set value on a configured-output pin
+    LINK_GPIO_OP_READ   = 2,         // read a configured-input pin
+};
+
+// GPIO pin modes for LINK_GPIO_OP_CONFIG.
+enum link_gpio_mode {
+    LINK_GPIO_MODE_INPUT          = 0,
+    LINK_GPIO_MODE_OUTPUT         = 1,
+    LINK_GPIO_MODE_INPUT_PULLUP   = 2,
+    LINK_GPIO_MODE_INPUT_PULLDOWN = 3,
+    LINK_GPIO_MODE_OPEN_DRAIN     = 4,
 };
 
 // PING / PONG payload.  The receiver echoes this verbatim in the PONG so the
@@ -278,6 +310,73 @@ struct link_ieee_scan_done {
     uint16_t duration_ms;
     uint8_t  status;            // link_ieee_scan_status
     uint8_t  reserved[3];
+} __attribute__((packed));
+
+// ── Expansion bus (stage 7) ────────────────────────────────────────────────
+//
+// Synchronous request/response semantics: the S3 sends a *_REQ frame
+// carrying a request_id, the C5 executes the operation against its
+// expansion I²C bus or one of the EXP_GPIOn pins, and replies with a
+// matching *_RESP frame echoing the request_id. Both sides allow a
+// single outstanding op for simplicity; the S3 side serialises via a
+// mutex inside c5_link.cpp.
+
+#define LINK_I2C_DATA_MAX     64    // bytes per read or write
+#define LINK_EXP_GPIO_COUNT    5    // EXP_GPIO0..EXP_GPIO4 on J_EXP
+
+// I²C read request. If reg_present is non-zero, the C5 writes `reg` to
+// the device before issuing the repeated-start read.
+struct link_i2c_read_req {
+    uint32_t request_id;
+    uint8_t  bus;               // reserved for future buses; 0 = expansion
+    uint8_t  device_addr;       // 7-bit, no R/W bit baked in
+    uint8_t  reg;               // register byte (ignored if reg_present=0)
+    uint8_t  reg_present;
+    uint8_t  read_len;          // 1..LINK_I2C_DATA_MAX
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+struct link_i2c_read_resp {
+    uint32_t request_id;
+    uint8_t  status;            // link_exp_status
+    uint8_t  read_len;          // actual bytes in `data` on success
+    uint8_t  reserved[2];
+    uint8_t  data[LINK_I2C_DATA_MAX];
+} __attribute__((packed));
+
+struct link_i2c_write_req {
+    uint32_t request_id;
+    uint8_t  bus;
+    uint8_t  device_addr;
+    uint8_t  reg;
+    uint8_t  reg_present;
+    uint8_t  data_len;          // 0..LINK_I2C_DATA_MAX
+    uint8_t  reserved[2];
+    uint8_t  data[LINK_I2C_DATA_MAX];
+} __attribute__((packed));
+
+struct link_i2c_write_resp {
+    uint32_t request_id;
+    uint8_t  status;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+// Unified GPIO request: same struct serves config / write / read,
+// distinguished by `op`.
+struct link_gpio_req {
+    uint32_t request_id;
+    uint8_t  pin_index;         // 0..LINK_EXP_GPIO_COUNT-1
+    uint8_t  op;                // link_gpio_op
+    uint8_t  mode;              // link_gpio_mode (CONFIG only)
+    uint8_t  value;             // 0 or 1 (WRITE only)
+    uint8_t  reserved[4];
+} __attribute__((packed));
+
+struct link_gpio_resp {
+    uint32_t request_id;
+    uint8_t  status;
+    uint8_t  value;             // READ result; 0 otherwise
+    uint8_t  reserved[2];
 } __attribute__((packed));
 
 // STATUS payload — minimal v1 health beacon.
