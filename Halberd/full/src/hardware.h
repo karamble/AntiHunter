@@ -3,7 +3,6 @@
 #include "network.h"
 #include "main.h"
 #include <RTClib.h>
-#include <TinyGPSPlus.h>
 #include <FS.h>
 #include <SD.h>
 
@@ -88,14 +87,26 @@ uint32_t getEventTimestamp();
 bool setRTCTime(int year, int month, int day, int hour, int minute, int second);
 bool setRTCTimeFromEpoch(time_t epoch);
 
-// Sensors and GPS
+// Sensors and GPS.
+//
+// On v5 the GPS module lives on the C5; the S3 receives parsed fixes over
+// the c5_link UART (see Halberd/shared/link_protocol.h struct link_gps_fix).
+// These globals are the post-handover replacement for the v4 TinyGPSPlus
+// object accessors — every field that used to come from `gps.<thing>` is
+// now mirrored as a typed global, updated by the c5_link GPS_FIX handler.
 extern bool sdAvailable;
 extern bool gpsValid;
 extern float gpsLat, gpsLon;
 extern SemaphoreHandle_t gpsMutex;
 extern String lastGPSData;
-extern HardwareSerial GPS;
-extern TinyGPSPlus gps;
+extern uint8_t gpsSatellites;
+extern float   gpsHDOP;          // 99.9 when no fix
+extern int     gpsAltitudeM;
+extern uint16_t gpsYear;
+extern uint8_t  gpsMonth, gpsDay, gpsHour, gpsMinute, gpsSecond, gpsCentisecond;
+extern bool gpsDateValid;
+extern bool gpsTimeValid;
+extern uint32_t gpsLastFixMs;    // millis() of most recent GPS_FIX frame, 0 if none
 extern volatile bool vibrationDetected;
 extern unsigned long lastVibrationTime;
 extern unsigned long lastVibrationAlert;

@@ -1,4 +1,5 @@
 #include "hardware.h"
+#include "c5_link.h"
 #include "network.h"
 #include "baseline.h"
 #include <Arduino.h>
@@ -7,7 +8,6 @@
 #include <WiFi.h>
 #include <SPI.h>
 #include <SD.h>
-#include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
 #include <Wire.h>
 #include "esp_wifi.h"
@@ -21,14 +21,22 @@ extern ScanMode currentScanMode;
 extern std::vector<uint8_t> CHANNELS;
 extern void disciplineRTCFromGPS();
 
-// GPS
-TinyGPSPlus gps;
-HardwareSerial GPS(2);
+// GPS state — fed by the c5_link GPS_FIX handler. See hardware.h for the
+// rationale on these typed globals replacing TinyGPSPlus object accessors.
 bool sdAvailable = false;
 String lastGPSData = "No GPS data";
 float gpsLat = 0.0, gpsLon = 0.0;
 bool gpsValid = false;
 SemaphoreHandle_t gpsMutex = nullptr;
+uint8_t  gpsSatellites = 0;
+float    gpsHDOP = 99.9f;
+int      gpsAltitudeM = 0;
+uint16_t gpsYear = 0;
+uint8_t  gpsMonth = 0, gpsDay = 0, gpsHour = 0;
+uint8_t  gpsMinute = 0, gpsSecond = 0, gpsCentisecond = 0;
+bool     gpsDateValid = false;
+bool     gpsTimeValid = false;
+uint32_t gpsLastFixMs = 0;
 extern bool hbEnabled;
 extern uint32_t hbInterval;
 
@@ -863,37 +871,24 @@ void initializeSD()
 }
 
 void initializeGPS() {
-    Serial.println("Initializing GPS…");
-
-    GPS.setRxBufferSize(2048);
-    GPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    // v5: the GPS module is owned by the C5 coprocessor. The S3 receives
+    // parsed fixes over the c5_link UART instead of speaking NMEA itself.
+    // The function name is preserved so call sites in setup() / network
+    // code don't need to change.
+    Serial.println("Initializing GPS (via C5 link)…");
 
     gpsMutex = xSemaphoreCreateMutex();
+    c5LinkInit();
 
+    // Brief wait so the link can hand us a first PING/PONG before we
+    // report startup status; no NMEA bytes to look for on the S3 side
+    // anymore. Fix may still take minutes to acquire after this returns.
     delay(500);
-    unsigned long start = millis();
-    bool sawSentence = false;
-    while (millis() - start < 4000) {
-        if (GPS.available()) {
-            char c = GPS.read();
-            if (gps.encode(c)) {
-                sawSentence = true;
-                break;
-            }
-        }
-    }
 
-    if (sawSentence) {
-        Serial.println("[GPS] GPS module responding (NMEA detected)");
-    } else {
-        Serial.println("[GPS] No NMEA data – check wiring or allow cold-start time");
-        Serial.println("[GPS] First fix can take 5–15 minutes outdoors");
-    }
-
-    // Send startup GPS status to server
     sendStartupStatus();
 
-    Serial.printf("[GPS] UART on RX:%d TX:%d\n", GPS_RX_PIN, GPS_TX_PIN);
+    Serial.printf("[GPS] C5 link on tx=%d rx=%d (was v4 GPS UART)\n",
+                  C5_LINK_TX_PIN, C5_LINK_RX_PIN);
 }
 
 void sendStartupStatus() {
@@ -918,8 +913,8 @@ void sendGPSLockStatus(bool locked) {
     gpsMsg += (locked ? "LOCKED" : "LOST");
     if (locked) {
         gpsMsg += " Location=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
-        gpsMsg += " Satellites:" + String(gps.satellites.isValid() ? gps.satellites.value() : 0);
-        gpsMsg += " HDOP:" + String(gps.hdop.isValid() ? gps.hdop.hdop() : 99.9, 2);
+        gpsMsg += " Satellites:" + String((int)gpsSatellites);
+        gpsMsg += " HDOP:" + String(gpsHDOP, 2);
     }
 
     Serial.printf("[GPS] %s\n", gpsMsg.c_str());
@@ -929,54 +924,27 @@ void sendGPSLockStatus(bool locked) {
 }
 
 void updateGPSLocation() {
-    static unsigned long lastDataTime = 0;
+    // v5: c5_link's GPS_FIX handler writes gpsLat/gpsLon/gpsValid/etc. on
+    // every frame from the C5 (once per second). This function is now a
+    // pure freshness watchdog: if no frame has arrived for 30 s, surrender
+    // the lock so downstream consumers don't act on stale coordinates.
     static bool wasLocked = false;
 
-    while (GPS.available() > 0) {
-        char c = GPS.read();
-        if (gps.encode(c)) {
-            lastDataTime = millis();
-
-            bool nowLocked = gps.location.isValid();
-
-            if (nowLocked) {
-                if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    gpsLat = gps.location.lat();
-                    gpsLon = gps.location.lng();
-                    gpsValid = true;
-                    xSemaphoreGive(gpsMutex);
-                }
-                lastGPSData = "Lat: " + String(gpsLat, 6)
-                            + ", Lon: " + String(gpsLon, 6)
-                            + " (" + String((millis() - lastDataTime) / 1000) 
-                            + "s ago)";
-                
-                if (!wasLocked && nowLocked) {
-                    sendGPSLockStatus(true);
-                }
+    if (gpsLastFixMs > 0 && (millis() - gpsLastFixMs) > 30000) {
+        if (gpsValid) {
+            if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                gpsValid = false;
+                xSemaphoreGive(gpsMutex);
             } else {
                 gpsValid = false;
-                lastGPSData = "No valid GPS fix (" 
-                            + String((millis() - lastDataTime) / 1000)
-                            + "s ago)";
-                
-                if (wasLocked) {
-                    sendGPSLockStatus(false);
-                }
             }
-            
-            wasLocked = nowLocked;
-        }
-    }
-
-    if (lastDataTime > 0 && millis() - lastDataTime > 30000) {
-        if (gpsValid) {
-            gpsValid = false;
+            lastGPSData = "No data for " + String((millis() - gpsLastFixMs) / 1000) + "s";
             sendGPSLockStatus(false);
+            wasLocked = false;
         }
-        lastGPSData = "No data for " 
-                    + String((millis() - lastDataTime) / 1000)
-                    + "s";
+    } else if (gpsValid != wasLocked) {
+        sendGPSLockStatus(gpsValid);
+        wasLocked = gpsValid;
     }
 }
 
@@ -1298,21 +1266,21 @@ bool setRTCTimeFromEpoch(time_t epoch) {
 void syncRTCFromGPS() {
     if (!rtcAvailable) return;
     if (!gpsValid) return;
-    if (!gps.date.isValid() || !gps.time.isValid()) return;
-    
+    if (!gpsDateValid || !gpsTimeValid) return;
+
     if (rtcSynced && lastRTCSync > 0 && (millis() - lastRTCSync) < 3600000) return;
-    
+
     if (triangulationActive) return;
     if (rtcMutex == nullptr) return;
-    
+
     if (xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
-    
-    int year = gps.date.year();
-    int month = gps.date.month();
-    int day = gps.date.day();
-    int hour = gps.time.hour();
-    int minute = gps.time.minute();
-    int second = gps.time.second();
+
+    int year   = gpsYear;
+    int month  = gpsMonth;
+    int day    = gpsDay;
+    int hour   = gpsHour;
+    int minute = gpsMinute;
+    int second = gpsSecond;
     
     if (year < 2020 || year > 2050) {
         xSemaphoreGive(rtcMutex);
@@ -1390,7 +1358,7 @@ void updateRTCTime() {
 
     xSemaphoreGive(rtcMutex);
 
-    if (gpsValid && gps.time.isValid()) {
+    if (gpsValid && gpsTimeValid) {
         disciplineRTCFromGPS();
     }
     if (gpsValid && !rtcSynced) {

@@ -702,10 +702,9 @@ static void handleStatus(const String &command)
                       (int)uptime_hours, (int)(uptime_mins % 60), (int)(uptime_secs % 60));
   if (gpsValid && written > 0 && written <= sizeof(status_msg) - 1)
   {
-      float hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
       snprintf(status_msg + written, sizeof(status_msg) - written,
               " GPS:%.6f,%.6f HDOP=%.1f",
-              gpsLat, gpsLon, hdop);
+              gpsLat, gpsLon, gpsHDOP);
   }
   sendToSerial1(String(status_msg), true);
 }
@@ -1113,9 +1112,7 @@ static void handleTriangulateStop(const String &command)
                           " Type:WiFi";  // Default to WiFi type for 0-hit reports
           if (gpsValid) {
               noHitMsg += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
-              if (gps.hdop.isValid()) {
-                  noHitMsg += " HDOP=" + String(gps.hdop.hdop(), 1);
-              }
+              noHitMsg += " HDOP=" + String(gpsHDOP, 1);
           }
           sendToSerial1(noHitMsg, true);
           Serial.println("[TRIANGULATE] Final 0-hit report sent (no detections)");

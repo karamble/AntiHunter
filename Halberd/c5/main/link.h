@@ -20,6 +20,11 @@ void link_send_ping(void);
 void link_send_status(void);
 void link_log_stats(void);
 
+// Push a GPS fix frame to the S3. Called by the GPS task once per second
+// (see gps.c). Caller owns the struct; this function copies the bytes.
+struct link_gps_fix;  // forward decl, full type in link_protocol.h
+void link_send_gps_fix(const struct link_gps_fix *fix);
+
 #ifdef __cplusplus
 }
 #endif

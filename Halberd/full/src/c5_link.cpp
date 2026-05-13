@@ -42,6 +42,47 @@ void send_frame(uint8_t type, uint8_t seq,
     xSemaphoreGive(s_tx_lock);
 }
 
+void apply_gps_fix(const struct link_gps_fix &fix) {
+    // Single source of truth for the typed GPS globals declared in
+    // hardware.h. updateGPSLocation() runs on the main loop and only does
+    // freshness/timeout bookkeeping based on gpsLastFixMs.
+    bool nowValid = (fix.fix_valid != 0);
+
+    if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        gpsLat = (float)fix.lat_e7 / 1.0e7f;
+        gpsLon = (float)fix.lon_e7 / 1.0e7f;
+        gpsValid = nowValid;
+        xSemaphoreGive(gpsMutex);
+    } else {
+        gpsLat = (float)fix.lat_e7 / 1.0e7f;
+        gpsLon = (float)fix.lon_e7 / 1.0e7f;
+        gpsValid = nowValid;
+    }
+
+    gpsSatellites  = fix.satellites;
+    gpsHDOP        = (fix.hdop_x100 == 0) ? 99.9f : (float)fix.hdop_x100 / 100.0f;
+    gpsAltitudeM   = (int)fix.altitude_m;
+    gpsYear        = fix.year;
+    gpsMonth       = fix.month;
+    gpsDay         = fix.day;
+    gpsHour        = fix.hour;
+    gpsMinute      = fix.minute;
+    gpsSecond      = fix.second;
+    gpsCentisecond = fix.centisecond;
+    gpsDateValid   = (fix.date_valid != 0);
+    gpsTimeValid   = (fix.time_valid != 0);
+    gpsLastFixMs   = (uint32_t)millis();
+
+    if (nowValid) {
+        lastGPSData = "Lat: " + String(gpsLat, 6)
+                    + ", Lon: " + String(gpsLon, 6)
+                    + " (sats=" + String((int)gpsSatellites)
+                    + " HDOP=" + String(gpsHDOP, 2) + ")";
+    } else {
+        lastGPSData = "No valid GPS fix (sats=" + String((int)gpsSatellites) + ")";
+    }
+}
+
 void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
               const uint8_t *payload, size_t len) {
     switch (type) {
@@ -60,6 +101,17 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         } else {
             Serial.printf("[c5link] PONG seq=%u unexpected len=%u\n",
                           seq, (unsigned)len);
+        }
+        break;
+
+    case LINK_MSG_GPS_FIX:
+        if (len == sizeof(struct link_gps_fix)) {
+            struct link_gps_fix fix;
+            memcpy(&fix, payload, sizeof(fix));
+            apply_gps_fix(fix);
+        } else {
+            Serial.printf("[c5link] GPS_FIX unexpected len=%u (want %u)\n",
+                          (unsigned)len, (unsigned)sizeof(struct link_gps_fix));
         }
         break;
 

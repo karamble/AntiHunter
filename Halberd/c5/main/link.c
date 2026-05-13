@@ -53,6 +53,14 @@ void link_send_ping(void) {
     send_frame(LINK_MSG_PING, s_seq++, (const uint8_t *)&p, sizeof(p));
 }
 
+void link_send_gps_fix(const struct link_gps_fix *fix) {
+    if (!fix) {
+        return;
+    }
+    send_frame(LINK_MSG_GPS_FIX, s_seq++,
+               (const uint8_t *)fix, sizeof(*fix));
+}
+
 void link_send_status(void) {
     const uint32_t errs = s_decoder.stats.bad_crc + s_decoder.stats.bad_length +
                           s_decoder.stats.short_frame + s_decoder.stats.overflow;

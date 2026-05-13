@@ -3928,7 +3928,7 @@ void listScanTask(void *pv) {
                     selfNode.lat = 0.0;
                     selfNode.lon = 0.0;
                 }
-                selfNode.hdop = gpsValid && gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
+                selfNode.hdop = gpsValid ? gpsHDOP : 99.9f;
                 selfNode.rssi = -128;
                 selfNode.hitCount = 0;
                 selfNode.hasGPS = gpsValid;
@@ -4249,7 +4249,7 @@ void listScanTask(void *pv) {
                                 triAccum.lat = 0.0;
                                 triAccum.lon = 0.0;
                             }
-                            triAccum.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
+                            triAccum.hdop = gpsHDOP;
                             triAccum.hasGPS = true;
                         }
 

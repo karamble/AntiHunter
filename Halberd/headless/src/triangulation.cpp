@@ -7,13 +7,11 @@
 #include <NimBLEDevice.h>
 #include <NimBLEScan.h>
 #include <NimBLEAdvertisedDevice.h>
-#include <TinyGPSPlus.h>
 
 extern String macFmt6(const uint8_t *m);
 extern bool parseMac6(const String &in, uint8_t out[6]);
 extern std::atomic<bool> stopRequested;
 extern ScanMode currentScanMode;
-extern TinyGPSPlus gps;
 extern float gpsLat, gpsLon;
 extern bool gpsValid;
 extern TriangulationAccumulator triAccum;
@@ -1057,7 +1055,7 @@ void stopTriangulation() {
                         " RSSI:" + String(selfBestRSSI);
 
         if (gpsValid) {
-            float selfHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
+            float selfHdop = gpsHDOP;
             if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                 dataMsg += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
                 xSemaphoreGive(gpsMutex);
@@ -1471,24 +1469,24 @@ String calculateTriangulation() {
 
 void disciplineRTCFromGPS() {
     if (!rtcAvailable || !gpsValid) return;
-    if (!gps.date.isValid() || !gps.time.isValid()) return;
+    if (!gpsDateValid || !gpsTimeValid) return;
     if (triangulationActive) return;
-    
+
     if (rtcMutex == nullptr) return;
     if (xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
-    
+
     DateTime rtcTime = rtc.now();
     time_t rtcEpoch = rtcTime.unixtime();
-    
+
     xSemaphoreGive(rtcMutex);
-    
-    int year = gps.date.year();
-    int month = gps.date.month();
-    int day = gps.date.day();
-    int hour = gps.time.hour();
-    int minute = gps.time.minute();
-    int second = gps.time.second();
-    int centisecond = gps.time.centisecond();  // 0-99, 10ms precision
+
+    int year = gpsYear;
+    int month = gpsMonth;
+    int day = gpsDay;
+    int hour = gpsHour;
+    int minute = gpsMinute;
+    int second = gpsSecond;
+    int centisecond = gpsCentisecond;  // 0-99, 10 ms precision
 
     if (year < 2020 || year > 2050) return;
     if (month < 1 || month > 12) return;
