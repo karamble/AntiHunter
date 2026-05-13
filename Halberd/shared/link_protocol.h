@@ -27,6 +27,9 @@ enum link_msg_type {
     LINK_MSG_BLE_SCAN_REQ    = 0x30,  // S3 → C5, kick a BLE scan
     LINK_MSG_BLE_ADV         = 0x31,  // C5 → S3, one per BLE advertisement event
     LINK_MSG_BLE_SCAN_DONE   = 0x32,  // C5 → S3, end of a BLE scan
+    LINK_MSG_IEEE_SCAN_REQ   = 0x40,  // S3 → C5, kick an IEEE 802.15.4 scan
+    LINK_MSG_IEEE_DETECTION  = 0x41,  // C5 → S3, one per parsed 802.15.4 frame
+    LINK_MSG_IEEE_SCAN_DONE  = 0x42,  // C5 → S3, end of an 802.15.4 scan
     LINK_MSG_STATUS          = 0xF0,  // periodic health beacon (sender-initiated)
     LINK_MSG_LOG             = 0xFE,  // forwarded log line (C5 → S3, future stage)
 };
@@ -53,6 +56,36 @@ enum link_ble_phy_mask {
     LINK_BLE_PHY_1M    = 0x01,  // legacy 1 Mbit/s primary
     LINK_BLE_PHY_2M    = 0x02,  // BLE 5 high-speed (secondary only — no scan on 2M)
     LINK_BLE_PHY_CODED = 0x04,  // BLE 5 long-range (S=8 / S=2)
+};
+
+// IEEE 802.15.4 scan status (link_ieee_scan_done.status).
+enum link_ieee_scan_status {
+    LINK_IEEE_STATUS_OK    = 0,
+    LINK_IEEE_STATUS_BUSY  = 1,
+    LINK_IEEE_STATUS_ERROR = 2,
+};
+
+// Protocol family classification carried in link_ieee_detection.protocol_family.
+// Classification is heuristic (Stack Profile byte for Zigbee, MLE / 6LoWPAN
+// signatures for Thread/Matter) — the S3 + diginode-cc can refine further.
+enum link_ieee_protocol_family {
+    LINK_IEEE_PROTO_UNKNOWN = 0,
+    LINK_IEEE_PROTO_ZIGBEE  = 1,   // beacon Stack Profile 0x01 (2007) or 0x02 (Pro)
+    LINK_IEEE_PROTO_THREAD  = 2,   // MLE Discovery / OpenThread network
+    LINK_IEEE_PROTO_MATTER  = 3,   // Thread-based, additional service signatures
+    LINK_IEEE_PROTO_OTHER   = 99,  // 6LoWPAN / Wireless HART / proprietary
+};
+
+// Frame-type values matching IEEE 802.15.4 FCF bits 0-2.
+enum link_ieee_frame_type {
+    LINK_IEEE_FRAME_BEACON     = 0,
+    LINK_IEEE_FRAME_DATA       = 1,
+    LINK_IEEE_FRAME_ACK        = 2,
+    LINK_IEEE_FRAME_CMD        = 3,
+    LINK_IEEE_FRAME_RESERVED   = 4,
+    LINK_IEEE_FRAME_MULTIPURP  = 5,
+    LINK_IEEE_FRAME_FRAGMENT   = 6,
+    LINK_IEEE_FRAME_EXTENDED   = 7,
 };
 
 // PING / PONG payload.  The receiver echoes this verbatim in the PONG so the
@@ -181,6 +214,69 @@ struct link_ble_scan_done {
     uint16_t adv_count;
     uint16_t duration_ms;
     uint8_t  status;            // link_ble_scan_status
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+// ── IEEE 802.15.4 scan (stage 6) ───────────────────────────────────────────
+//
+// 802.15.4 frame sniffer: the C5 hops channels 11-26, runs the radio in
+// promiscuous RX, parses each received MAC frame, classifies the
+// protocol family (Zigbee / Thread / Matter / Unknown) on heuristics,
+// and emits one DETECTION per frame. S3 stores them for cloud forwarding.
+//
+// Unlike Wi-Fi / BLE, the S3 has no native 802.15.4 radio — this is
+// a C5-only feature, not a "mirror". DETECTION frames carry both the
+// parsed view and the raw MAC payload (truncated to 64 bytes) so
+// diginode-cc can do deeper protocol analysis without re-asking the C5.
+
+#define LINK_IEEE_CHANNEL_COUNT_MAX  16   // channels 11..26
+#define LINK_IEEE_PAYLOAD_MAX        64
+#define LINK_IEEE_ADDR_LEN           8    // EUI-64; short addrs occupy low 2 bytes
+
+struct link_ieee_scan_req {
+    uint32_t scan_id;
+    uint16_t duration_ms;       // total scan budget; divided across channels
+    uint8_t  channel_count;     // 1..LINK_IEEE_CHANNEL_COUNT_MAX
+    uint8_t  channels[LINK_IEEE_CHANNEL_COUNT_MAX];  // 11..26 each
+    uint8_t  reserved;
+} __attribute__((packed));
+
+// Parsed MAC-layer view of one captured 802.15.4 frame.
+//
+// Address fields use 8 bytes for both short and extended addresses. For
+// short (16-bit) addresses, only the first two bytes are meaningful and
+// the rest are zero. addr_mode tells you which is which:
+//   0 = no address present
+//   2 = short  (16-bit)
+//   3 = extended (64-bit EUI)
+//
+// flags bits: 0=security_enabled, 1=ack_request, 2=frame_pending,
+//             3=pan_id_compression, 4=seq_num_suppression, 5=ie_present.
+struct link_ieee_detection {
+    uint32_t scan_id;
+    uint8_t  channel;           // 11..26
+    int8_t   rssi;              // dBm reported by the radio
+    uint8_t  lqi;               // link quality indicator (0..255)
+    uint8_t  frame_type;        // link_ieee_frame_type
+    uint8_t  frame_version;     // 0=2003, 1=2006, 2=2015
+    uint8_t  protocol_family;   // link_ieee_protocol_family
+    uint8_t  seq_num;           // sequence number (0 if suppressed)
+    uint8_t  flags;
+    uint16_t dst_pan;           // 0xFFFF when absent or broadcast
+    uint16_t src_pan;           // 0xFFFF when absent (PAN ID compression)
+    uint8_t  dst_addr_mode;
+    uint8_t  dst_addr[LINK_IEEE_ADDR_LEN];
+    uint8_t  src_addr_mode;
+    uint8_t  src_addr[LINK_IEEE_ADDR_LEN];
+    uint8_t  payload_len;       // 0..LINK_IEEE_PAYLOAD_MAX (truncated)
+    uint8_t  payload[LINK_IEEE_PAYLOAD_MAX];
+} __attribute__((packed));
+
+struct link_ieee_scan_done {
+    uint32_t scan_id;
+    uint16_t detection_count;
+    uint16_t duration_ms;
+    uint8_t  status;            // link_ieee_scan_status
     uint8_t  reserved[3];
 } __attribute__((packed));
 

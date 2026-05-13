@@ -95,6 +95,41 @@ bool c5LinkBleDrainResult(struct C5BleAdv *out);
 // Most recent BLE_SCAN_DONE's scan_id (0 if none); clears on read.
 uint32_t c5LinkBleTakeDoneScanId(void);
 
+// ── IEEE 802.15.4 sniffer API (stage 6) ────────────────────────────────────
+// One parsed 802.15.4 detection drained from the C5. Mirrors
+// link_ieee_detection in Halberd/shared/link_protocol.h.
+#define C5_IEEE_PAYLOAD_MAX  64
+#define C5_IEEE_ADDR_LEN      8
+
+struct C5Ieee802154Detection {
+    uint32_t scan_id;
+    uint8_t  channel;            // 11..26
+    int8_t   rssi;
+    uint8_t  lqi;
+    uint8_t  frame_type;         // 0=beacon, 1=data, 2=ack, 3=cmd
+    uint8_t  frame_version;      // 0=2003, 1=2006, 2=2015
+    uint8_t  protocol_family;    // 0=Unknown, 1=Zigbee, 2=Thread, 3=Matter, 99=Other
+    uint8_t  seq_num;
+    uint8_t  flags;              // bit0=security, bit1=ack_req, bit2=frame_pending, …
+    uint16_t dst_pan;            // 0xFFFF when absent or broadcast
+    uint16_t src_pan;            // 0xFFFF when absent / PAN ID compression
+    uint8_t  dst_addr_mode;      // 0=none, 2=short, 3=extended
+    uint8_t  dst_addr[C5_IEEE_ADDR_LEN];
+    uint8_t  src_addr_mode;
+    uint8_t  src_addr[C5_IEEE_ADDR_LEN];
+    uint8_t  payload_len;
+    uint8_t  payload[C5_IEEE_PAYLOAD_MAX];
+};
+
+// Trigger an 802.15.4 scan. channels[count] are channel numbers 11..26.
+// duration_ms is divided across channels by the C5.
+bool c5LinkIeeeScanStart(uint32_t scan_id,
+                         const uint8_t *channels, uint8_t count,
+                         uint16_t duration_ms);
+
+bool c5LinkIeeeDrainResult(struct C5Ieee802154Detection *out);
+uint32_t c5LinkIeeeTakeDoneScanId(void);
+
 #ifdef __cplusplus
 }
 #endif

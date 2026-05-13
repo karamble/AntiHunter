@@ -50,6 +50,17 @@ struct link_ble_scan_req;
 typedef void (*link_ble_scan_req_cb)(const struct link_ble_scan_req *req);
 void link_register_ble_scan_req(link_ble_scan_req_cb cb);
 
+// Push an 802.15.4 detection / scan-done frame (see ieee802154.c).
+struct link_ieee_detection;
+struct link_ieee_scan_done;
+void link_send_ieee_detection(const struct link_ieee_detection *det);
+void link_send_ieee_scan_done(const struct link_ieee_scan_done *done);
+
+// Register an IEEE_SCAN_REQ callback (the ieee802154 module installs this).
+struct link_ieee_scan_req;
+typedef void (*link_ieee_scan_req_cb)(const struct link_ieee_scan_req *req);
+void link_register_ieee_scan_req(link_ieee_scan_req_cb cb);
+
 #ifdef __cplusplus
 }
 #endif

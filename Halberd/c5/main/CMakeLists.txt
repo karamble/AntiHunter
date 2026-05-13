@@ -4,6 +4,7 @@ idf_component_register(
          "gps.c"
          "wifi.c"
          "ble.c"
+         "ieee802154.c"
          "../../shared/link_codec.c"
     INCLUDE_DIRS "."
                  "../../shared"

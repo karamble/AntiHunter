@@ -154,6 +154,83 @@ static uint32_t triggerC5BleScan() {
     return id;
 }
 
+// ── C5 IEEE 802.15.4 sniffer (stage 6) ─────────────────────────────────────
+// All 16 channels of the 2.4 GHz 802.15.4 band. The C5 hops through them
+// at ~125 ms each (2 s / 16) which catches one or two Zigbee beacons per
+// channel in a typical environment. No "mirror" semantics here — the S3
+// has no 802.15.4 radio so this is genuinely C5-only.
+static const uint8_t C5_IEEE_CHANNELS[] = {
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+};
+static const uint8_t C5_IEEE_CHANNEL_COUNT = sizeof(C5_IEEE_CHANNELS);
+#define C5_IEEE_DURATION_MS  2000
+
+static uint32_t triggerC5IeeeScan() {
+    uint32_t id = millis();
+    c5LinkIeeeScanStart(id, C5_IEEE_CHANNELS, C5_IEEE_CHANNEL_COUNT,
+                        C5_IEEE_DURATION_MS);
+    return id;
+}
+
+static const char *ieeeProtoName(uint8_t fam) {
+    switch (fam) {
+    case 1:  return "Zigbee";
+    case 2:  return "Thread";
+    case 3:  return "Matter";
+    case 99: return "Other";
+    default: return "Unknown";
+    }
+}
+
+static const char *ieeeFrameTypeName(uint8_t t) {
+    switch (t) {
+    case 0: return "Beacon";
+    case 1: return "Data";
+    case 2: return "Ack";
+    case 3: return "Cmd";
+    default: return "Frame";
+    }
+}
+
+// Drain whatever 802.15.4 detections have arrived and log each one. Same
+// shape as the WiFi/BLE drains but writes to a dedicated SD logEntry —
+// no target match yet (802.15.4 EUI-64 addresses don't fit the existing
+// 6-byte matchers).
+static int drainC5IeeeDetections() {
+    C5Ieee802154Detection det;
+    int count = 0;
+    while (c5LinkIeeeDrainResult(&det)) {
+        char srcAddrBuf[24];
+        if (det.src_addr_mode == 3) {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf),
+                     "%02X%02X%02X%02X%02X%02X%02X%02X",
+                     det.src_addr[0], det.src_addr[1], det.src_addr[2], det.src_addr[3],
+                     det.src_addr[4], det.src_addr[5], det.src_addr[6], det.src_addr[7]);
+        } else if (det.src_addr_mode == 2) {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf), "%04X",
+                     (unsigned)det.src_addr[0] | ((unsigned)det.src_addr[1] << 8));
+        } else {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf), "-");
+        }
+        String logEntry = String("802.15.4 (C5/") + ieeeProtoName(det.protocol_family) + "/" +
+                          ieeeFrameTypeName(det.frame_type) + "): ch=" + String((int)det.channel) +
+                          " RSSI=" + String((int)det.rssi) + "dBm" +
+                          " LQI=" + String((int)det.lqi) +
+                          " PAN=0x" + String(det.src_pan == 0xFFFF ? det.dst_pan : det.src_pan, HEX) +
+                          " SRC=" + String(srcAddrBuf);
+        if (gpsValid) {
+            if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                logEntry += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                xSemaphoreGive(gpsMutex);
+            }
+        }
+        Serial.println("[SCAN] " + logEntry);
+        logToSD(logEntry);
+        count++;
+    }
+    return count;
+}
+
 // Convert a drained C5 AP record into a Hit. SSID is normalized to "[Hidden]"
 // when empty, matching the local 2.4 GHz processing.
 static void c5ApToHit(const C5WifiAp &ap, Hit &out, String &outBssid, String &outSsid) {
@@ -1165,6 +1242,8 @@ void snifferScanTask(void *pv)
     int networksFound = 0; // cppcheck-suppress variableScope
     unsigned long lastBLEScan = 0;
     unsigned long lastWiFiScan = 0;
+    unsigned long lastIeeeScan = 0;
+    const unsigned long IEEE_SCAN_INTERVAL = 10000;  // 802.15.4 background sweep every 10 s
     unsigned long lastMeshUpdate = 0;
     const unsigned long MESH_DEVICE_SCAN_UPDATE_INTERVAL = 3000;
     unsigned long nextResultsUpdate = millis() + 5000;
@@ -1462,6 +1541,20 @@ void snifferScanTask(void *pv)
                 }
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
+        }
+
+        // ── 802.15.4 background sweep (stage 6) ────────────────────────────
+        // Fire-and-drain: trigger every IEEE_SCAN_INTERVAL, drain on every
+        // iteration so detections from the previous cycle land in the log
+        // promptly. The C5 serialises Wi-Fi / BLE / 802.15.4 scans so this
+        // just queues up after whatever's currently running.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        int ieeeFound = drainC5IeeeDetections();
+        if (ieeeFound > 0) {
+            Serial.printf("[SNIFFER] C5 802.15.4 drained %d detections\n", ieeeFound);
         }
 
         if (meshEnabled && millis() - lastMeshUpdate >= MESH_DEVICE_SCAN_UPDATE_INTERVAL && canSendInSlot())
@@ -3201,6 +3294,8 @@ void probeDetectionTask(void *pv)
     uint32_t startTime = millis();
     uint32_t nextResultsUpdate = startTime;
     uint32_t lastBLEScan = 0;
+    uint32_t lastIeeeScan = 0;
+    const uint32_t IEEE_SCAN_INTERVAL = 10000;
     uint32_t lastDBSave = startTime;
 
     while ((forever && !stopRequested) ||
@@ -3428,6 +3523,15 @@ void probeDetectionTask(void *pv)
             saveProbeDB();
             lastDBSave = millis();
         }
+
+        // 802.15.4 background sweep — probe-detection mode shares the
+        // bandwidth budget with the WiFi promiscuous capture, so we
+        // trigger less aggressively than in sniffer/hunter.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        drainC5IeeeDetections();
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -4133,6 +4237,8 @@ void listScanTask(void *pv) {
     const uint32_t DEDUPE_WINDOW = 3000; // cppcheck-suppress shadowVariable
     uint32_t lastWiFiScan = 0;
     uint32_t lastBLEScan = 0;
+    uint32_t lastIeeeScan = 0;
+    const uint32_t IEEE_SCAN_INTERVAL = 10000;
     Hit h;
 
     uint32_t nextTriResultsUpdate = millis() + 2000;
@@ -4426,6 +4532,16 @@ void listScanTask(void *pv) {
                 bleFramesSeen++;
             }
         }
+
+        // 802.15.4 background sweep — fire and drain. Detections aren't
+        // matched against the WiFi/BLE target lists yet (EUI-64 addresses
+        // don't fit the 6-byte matchers); they get logged to SD and the
+        // serial console for diagnostic / cloud-side analysis.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        drainC5IeeeDetections();
 
         while (safeMacQueueReceive(&h, 0)) {
             String macStrOrig = macFmt6(h.mac);

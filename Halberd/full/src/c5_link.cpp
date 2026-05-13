@@ -23,6 +23,10 @@ constexpr size_t   C5_LINK_WIFI_QUEUE_LEN = 64;
 // per device); the scanner task drains at scan-loop rate, so we size
 // for a few seconds of headroom. Each entry is ~80 B → ~10 KB.
 constexpr size_t   C5_LINK_BLE_QUEUE_LEN = 128;
+// 802.15.4 detections are lower-rate than BLE adverts (one network beacon
+// per ~100 ms typically) but each carries the full parsed view + payload.
+// 32 slots covers a few seconds of busy traffic.
+constexpr size_t   C5_LINK_IEEE_QUEUE_LEN = 32;
 
 HardwareSerial    s_uart(C5_LINK_UART_NUM);
 link_decoder_t    s_decoder;
@@ -32,8 +36,10 @@ bool              s_initialized = false;
 uint32_t          s_last_ping_ms = 0;
 QueueHandle_t     s_wifi_queue = nullptr;
 QueueHandle_t     s_ble_queue = nullptr;
+QueueHandle_t     s_ieee_queue = nullptr;
 volatile uint32_t s_wifi_done_scan_id = 0;
 volatile uint32_t s_ble_done_scan_id = 0;
+volatile uint32_t s_ieee_done_scan_id = 0;
 
 void send_frame(uint8_t type, uint8_t seq,
                 const uint8_t *payload, size_t len) {
@@ -193,6 +199,46 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         }
         break;
 
+    case LINK_MSG_IEEE_DETECTION:
+        if (len == sizeof(struct link_ieee_detection) && s_ieee_queue != nullptr) {
+            struct link_ieee_detection w;
+            memcpy(&w, payload, sizeof(w));
+            C5Ieee802154Detection d;
+            d.scan_id         = w.scan_id;
+            d.channel         = w.channel;
+            d.rssi            = w.rssi;
+            d.lqi             = w.lqi;
+            d.frame_type      = w.frame_type;
+            d.frame_version   = w.frame_version;
+            d.protocol_family = w.protocol_family;
+            d.seq_num         = w.seq_num;
+            d.flags           = w.flags;
+            d.dst_pan         = w.dst_pan;
+            d.src_pan         = w.src_pan;
+            d.dst_addr_mode   = w.dst_addr_mode;
+            d.src_addr_mode   = w.src_addr_mode;
+            memcpy(d.dst_addr, w.dst_addr, C5_IEEE_ADDR_LEN);
+            memcpy(d.src_addr, w.src_addr, C5_IEEE_ADDR_LEN);
+            d.payload_len     = w.payload_len > C5_IEEE_PAYLOAD_MAX ? C5_IEEE_PAYLOAD_MAX : w.payload_len;
+            memcpy(d.payload, w.payload, C5_IEEE_PAYLOAD_MAX);
+            if (xQueueSend(s_ieee_queue, &d, 0) != pdTRUE) {
+                C5Ieee802154Detection drop;
+                xQueueReceive(s_ieee_queue, &drop, 0);
+                xQueueSend(s_ieee_queue, &d, 0);
+            }
+        }
+        break;
+
+    case LINK_MSG_IEEE_SCAN_DONE:
+        if (len == sizeof(struct link_ieee_scan_done)) {
+            struct link_ieee_scan_done d;
+            memcpy(&d, payload, sizeof(d));
+            s_ieee_done_scan_id = d.scan_id;
+            Serial.printf("[c5link] IEEE scan id=%u done detections=%u elapsed=%ums status=%u\n",
+                          (unsigned)d.scan_id, d.detection_count, d.duration_ms, d.status);
+        }
+        break;
+
     case LINK_MSG_STATUS:
         if (len == sizeof(struct link_status_payload)) {
             struct link_status_payload p;
@@ -242,6 +288,7 @@ void c5LinkInit(void) {
     s_tx_lock = xSemaphoreCreateMutex();
     s_wifi_queue = xQueueCreate(C5_LINK_WIFI_QUEUE_LEN, sizeof(C5WifiAp));
     s_ble_queue  = xQueueCreate(C5_LINK_BLE_QUEUE_LEN,  sizeof(C5BleAdv));
+    s_ieee_queue = xQueueCreate(C5_LINK_IEEE_QUEUE_LEN, sizeof(C5Ieee802154Detection));
     link_decoder_init(&s_decoder);
 
     s_uart.setRxBufferSize(1024);
@@ -317,6 +364,36 @@ bool c5LinkBleDrainResult(struct C5BleAdv *out) {
 uint32_t c5LinkBleTakeDoneScanId(void) {
     uint32_t id = s_ble_done_scan_id;
     if (id != 0) s_ble_done_scan_id = 0;
+    return id;
+}
+
+bool c5LinkIeeeScanStart(uint32_t scan_id,
+                         const uint8_t *channels, uint8_t count,
+                         uint16_t duration_ms) {
+    if (!s_initialized) return false;
+    if (count == 0 || channels == nullptr) return false;
+    if (count > LINK_IEEE_CHANNEL_COUNT_MAX) count = LINK_IEEE_CHANNEL_COUNT_MAX;
+
+    struct link_ieee_scan_req req;
+    memset(&req, 0, sizeof(req));
+    req.scan_id       = scan_id;
+    req.duration_ms   = duration_ms;
+    req.channel_count = count;
+    memcpy(req.channels, channels, count);
+
+    send_frame(LINK_MSG_IEEE_SCAN_REQ, s_seq++,
+               reinterpret_cast<const uint8_t *>(&req), sizeof(req));
+    return true;
+}
+
+bool c5LinkIeeeDrainResult(struct C5Ieee802154Detection *out) {
+    if (!s_ieee_queue || !out) return false;
+    return xQueueReceive(s_ieee_queue, out, 0) == pdTRUE;
+}
+
+uint32_t c5LinkIeeeTakeDoneScanId(void) {
+    uint32_t id = s_ieee_done_scan_id;
+    if (id != 0) s_ieee_done_scan_id = 0;
     return id;
 }
 

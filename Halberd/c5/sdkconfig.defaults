@@ -30,6 +30,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 
+# ── IEEE 802.15.4 (stage 6) ────────────────────────────────────────────────
+# The ESP32-C5 has a hardware 802.15.4 PHY at 2.4 GHz. Enabling it pulls
+# in the radio control component but no upper-layer stack (we run pure
+# promiscuous sniffer, not Thread / Zigbee host).
+CONFIG_IEEE802154_ENABLED=y
+
 # ── BLE (stage 5) ──────────────────────────────────────────────────────────
 # Use NimBLE host stack — BLE 5 features (Coded PHY, extended adv, 2M)
 # matter for what the C5 adds over the S3's NimBLE-Arduino scan.
