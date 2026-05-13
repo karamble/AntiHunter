@@ -17,6 +17,7 @@
 #include "triangulation.h"
 #include "baseline.h"
 #include "main.h"
+#include "c5_link.h"
 
 extern "C"
 {
@@ -118,6 +119,49 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type);
 // Scan intervals
 uint32_t WIFI_SCAN_INTERVAL = 4000;
 uint32_t BLE_SCAN_INTERVAL = 2000;
+
+// ── C5 5 GHz mirror scan (stage 4) ─────────────────────────────────────────
+// Channels paired with each 2.4 GHz scan on the S3 side. Country "01" on
+// the C5 enables passive scan on UNII-1 + UNII-2A + UNII-2C globally;
+// UNII-3 (149-165) is US/CA/AU-only and is omitted here. The C5 silently
+// skips any channel its current regulatory domain disallows.
+static const uint8_t C5_WIFI_5GHZ_CHANNELS[] = {
+    36, 40, 44, 48,                              // UNII-1
+    52, 56, 60, 64,                              // UNII-2A (DFS, passive)
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,  // UNII-2C (DFS)
+};
+static const uint8_t C5_WIFI_5GHZ_COUNT = sizeof(C5_WIFI_5GHZ_CHANNELS);
+
+static uint32_t triggerC5WifiScan() {
+    uint32_t id = millis();
+    const uint16_t total_ms = (uint16_t)(rfConfig.wifiChannelTime * C5_WIFI_5GHZ_COUNT);
+    c5LinkWifiScanStart(id, C5_WIFI_5GHZ_CHANNELS, C5_WIFI_5GHZ_COUNT,
+                        total_ms, /*passive=*/true);
+    return id;
+}
+
+static void c5ApToHit(const C5WifiAp &ap, Hit &out, String &outBssid, String &outSsid) {
+    char macBuf[18];
+    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             ap.bssid[0], ap.bssid[1], ap.bssid[2],
+             ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+    outBssid = String(macBuf);
+
+    size_t slen = ap.ssid_len > 32 ? 32 : ap.ssid_len;
+    char ssidBuf[33];
+    if (slen > 0) memcpy(ssidBuf, ap.ssid, slen);
+    ssidBuf[slen] = '\0';
+    outSsid = String(ssidBuf);
+    if (outSsid.length() == 0) outSsid = "[Hidden]";
+
+    memcpy(out.mac, ap.bssid, 6);
+    out.rssi = ap.rssi;
+    out.ch   = ap.channel;
+    strncpy(out.name, outSsid.c_str(), sizeof(out.name) - 1);
+    out.name[sizeof(out.name) - 1] = '\0';
+    out.isBLE = false;
+}
+
 
 // Scanner status variables
 std::atomic<bool> scanning(false);
@@ -1067,6 +1111,8 @@ void snifferScanTask(void *pv)
             (millis() - lastWiFiScan >= WIFI_SCAN_INTERVAL || lastWiFiScan == 0)) {
             lastWiFiScan = millis();
 
+            triggerC5WifiScan();
+
             Serial.println("[SNIFFER] Scanning WiFi networks...");
             int networksFound = WiFi.scanNetworks(false, true, false, rfConfig.wifiChannelTime);
             if (stopRequested) break;
@@ -1135,6 +1181,44 @@ void snifferScanTask(void *pv)
             }
 
             Serial.printf("[SNIFFER] WiFi scan found %d networks\n", networksFound);
+
+            C5WifiAp c5ap;
+            int c5Found = 0;
+            while (c5LinkWifiDrainResult(&c5ap)) {
+                if (c5ap.rssi < rfConfig.globalRssiThreshold) continue;
+                Hit h;
+                String bssid, ssid;
+                c5ApToHit(c5ap, h, bssid, ssid);
+                if (apCache.find(bssid) != apCache.end()) continue;
+                if (apCache.size() < MAX_AP_CACHE) {
+                    apCache[bssid] = ssid;
+                }
+                uniqueMacs.insert(bssid);
+                if (hitsLog.size() < MAX_LOG_SIZE) {
+                    hitsLog.push_back(h);
+                }
+                if (matchesMac(h.mac)) {
+                    totalHits = totalHits + 1;
+                }
+                String logEntry = "WiFi AP (5GHz/C5): " + bssid + " SSID: " + ssid +
+                                  " RSSI: " + String((int)c5ap.rssi) + "dBm CH: " + String((int)c5ap.channel);
+                if (gpsValid) {
+                    if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        logEntry += " GPS: " + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                        xSemaphoreGive(gpsMutex);
+                    }
+                }
+                Serial.println("[SNIFFER] " + logEntry);
+                logToSD(logEntry);
+                uint8_t mac[6];
+                if (parseMac6(bssid, mac) && matchesMac(mac)) {
+                    sendMeshNotification(h);
+                }
+                c5Found++;
+            }
+            if (c5Found > 0) {
+                Serial.printf("[SNIFFER] C5 5GHz drained %d networks\n", c5Found);
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
         }
 
@@ -3988,6 +4072,7 @@ void listScanTask(void *pv) {
         if ((currentScanMode == SCAN_WIFI || currentScanMode == SCAN_BOTH) &&
             (millis() - lastWiFiScan >= WIFI_SCAN_INTERVAL || lastWiFiScan == 0)) {
             lastWiFiScan = millis();
+            triggerC5WifiScan();
             int networksFound = WiFi.scanNetworks(false, true, false, rfConfig.wifiChannelTime);
             if (stopRequested) break;
             if (networksFound > 0) {
@@ -4054,6 +4139,48 @@ void listScanTask(void *pv) {
                 WiFi.scanDelete();
             }
             framesSeen += networksFound;
+
+            // Drain C5 5 GHz mirror results. Mirrors the local-dedup +
+            // triangulation-aware logic above.
+            C5WifiAp c5ap;
+            while (c5LinkWifiDrainResult(&c5ap)) {
+                if (!triangulationActive && c5ap.rssi < rfConfig.globalRssiThreshold) continue;
+                Hit wh;
+                String bssidStr, ssidStr;
+                c5ApToHit(c5ap, wh, bssidStr, ssidStr);
+
+                uint32_t now = millis();
+                bool shouldProcess = (localDeviceLastSeen.find(bssidStr) == localDeviceLastSeen.end() ||
+                                      (now - localDeviceLastSeen[bssidStr] >= LOCAL_DEDUPE_WINDOW));
+                if (!shouldProcess) continue;
+
+                bool isMatch;
+                if (triangulationActive) {
+                    if (strlen(triangulationTargetIdentity) > 0) {
+                        isMatch = matchesIdentityMac(triangulationTargetIdentity, wh.mac);
+                    } else {
+                        isMatch = (memcmp(wh.mac, triangulationTarget, 6) == 0);
+                    }
+                } else {
+                    isMatch = matchesMac(wh.mac);
+                    if (!isMatch && ssidStr.length() > 0) {
+                        isMatch = matchesSsid(ssidStr.c_str());
+                    }
+                }
+
+                uniqueMacs.insert(bssidStr);
+                if (isMatch) {
+                    if (!safeMacQueueSend(&wh, pdMS_TO_TICKS(10))) {
+                        Serial.printf("[SCAN] Queue full for C5 5GHz target %s\n", bssidStr.c_str());
+                    }
+                } else {
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(wh);
+                    }
+                    localDeviceLastSeen[bssidStr] = now;
+                }
+                framesSeen++;
+            }
         }
 
         extern void processUSBToMesh();

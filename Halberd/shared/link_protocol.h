@@ -18,11 +18,21 @@
 #include <stdint.h>
 
 enum link_msg_type {
-    LINK_MSG_PING    = 0x01,  // either side → other side, with peer uptime
-    LINK_MSG_PONG    = 0x02,  // reply to PING, echoes the original payload
-    LINK_MSG_GPS_FIX = 0x10,  // C5 → S3, pushed at 1 Hz when NMEA flows
-    LINK_MSG_STATUS  = 0xF0,  // periodic health beacon (sender-initiated)
-    LINK_MSG_LOG     = 0xFE,  // forwarded log line (C5 → S3, future stage)
+    LINK_MSG_PING            = 0x01,  // either side → other side, with peer uptime
+    LINK_MSG_PONG            = 0x02,  // reply to PING, echoes the original payload
+    LINK_MSG_GPS_FIX         = 0x10,  // C5 → S3, pushed at 1 Hz when NMEA flows
+    LINK_MSG_WIFI_SCAN_REQ   = 0x20,  // S3 → C5, kick a Wi-Fi scan
+    LINK_MSG_WIFI_AP_RESULT  = 0x21,  // C5 → S3, one per AP seen in a scan
+    LINK_MSG_WIFI_SCAN_DONE  = 0x22,  // C5 → S3, end of a scan
+    LINK_MSG_STATUS          = 0xF0,  // periodic health beacon (sender-initiated)
+    LINK_MSG_LOG             = 0xFE,  // forwarded log line (C5 → S3, future stage)
+};
+
+// Wi-Fi scan status codes returned in link_wifi_scan_done.status.
+enum link_wifi_scan_status {
+    LINK_WIFI_STATUS_OK    = 0,
+    LINK_WIFI_STATUS_BUSY  = 1,
+    LINK_WIFI_STATUS_ERROR = 2,
 };
 
 // PING / PONG payload.  The receiver echoes this verbatim in the PONG so the
@@ -61,6 +71,51 @@ struct link_gps_fix {
     uint8_t  date_valid;       // 1 if RMC reported a usable date
     uint8_t  time_valid;       // 1 if RMC reported a usable time
     uint8_t  reserved;
+} __attribute__((packed));
+
+// ── Wi-Fi scan (stage 4) ───────────────────────────────────────────────────
+//
+// S3 sends WIFI_SCAN_REQ; the C5 walks the channel list, scanning each one
+// for ~duration_ms / channel_count, and emits one WIFI_AP_RESULT frame per
+// AP discovered, ending with WIFI_SCAN_DONE. All result frames carry the
+// scan_id from the request so the S3 can correlate.
+
+#define LINK_WIFI_MAX_CHANNELS  32
+#define LINK_WIFI_SSID_MAX      32   // matches wifi_ap_record_t.ssid layout
+#define LINK_WIFI_BSSID_LEN     6
+
+struct link_wifi_scan_req {
+    uint32_t scan_id;        // S3-chosen, echoed on results + done
+    uint16_t duration_ms;    // total scan budget across all channels
+    uint8_t  passive;        // 1 = passive (default for legal compliance), 0 = active
+    uint8_t  channel_count;  // 1..LINK_WIFI_MAX_CHANNELS
+    uint8_t  channels[LINK_WIFI_MAX_CHANNELS];  // 1..165, only first channel_count valid
+} __attribute__((packed));
+
+// Per-AP record. SSID is space-padded and `ssid_len` says how many bytes are
+// significant; the receiver should NOT assume null termination.
+// auth_mode mirrors wifi_auth_mode_t from esp_wifi_types.h (0=OPEN,
+// 1=WEP, 2=WPA-PSK, 3=WPA2-PSK, 4=WPA/WPA2-PSK, 5=WPA2-ENTERPRISE,
+// 6=WPA3-PSK, 7=WPA2/WPA3-PSK, 8=WAPI-PSK, 9=OWE, …).
+// phy_modes bits: 0=11b, 1=11g, 2=11n, 3=11ac, 4=11ax, 5=LR, 6=WPS.
+struct link_wifi_ap_result {
+    uint32_t scan_id;
+    int8_t   rssi;
+    uint8_t  channel;
+    uint8_t  bssid[LINK_WIFI_BSSID_LEN];
+    uint8_t  auth_mode;
+    uint8_t  ssid_len;
+    char     ssid[LINK_WIFI_SSID_MAX];
+    uint8_t  phy_modes;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+struct link_wifi_scan_done {
+    uint32_t scan_id;
+    uint16_t ap_count;       // how many AP_RESULT frames preceded this DONE
+    uint16_t duration_ms;    // actual elapsed time
+    uint8_t  status;         // link_wifi_scan_status
+    uint8_t  reserved[3];
 } __attribute__((packed));
 
 // STATUS payload — minimal v1 health beacon.

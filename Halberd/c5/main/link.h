@@ -25,6 +25,20 @@ void link_log_stats(void);
 struct link_gps_fix;  // forward decl, full type in link_protocol.h
 void link_send_gps_fix(const struct link_gps_fix *fix);
 
+// Push a Wi-Fi AP record / scan-done frame to the S3 (see wifi.c). These
+// fire while a scan job is running on the C5.
+struct link_wifi_ap_result;
+struct link_wifi_scan_done;
+void link_send_wifi_ap_result(const struct link_wifi_ap_result *r);
+void link_send_wifi_scan_done(const struct link_wifi_scan_done *d);
+
+// Register a callback that fires when the S3 sends a WIFI_SCAN_REQ. The
+// C5 wifi module installs this during wifi_init(); link's dispatcher
+// invokes it on the link task. Caller copies the payload before returning.
+struct link_wifi_scan_req;
+typedef void (*link_wifi_scan_req_cb)(const struct link_wifi_scan_req *req);
+void link_register_wifi_scan_req(link_wifi_scan_req_cb cb);
+
 #ifdef __cplusplus
 }
 #endif

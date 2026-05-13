@@ -15,12 +15,19 @@ constexpr uint32_t C5_LINK_BAUD         = 921600;
 constexpr uint32_t C5_LINK_PING_MS      = 5000;
 constexpr uint16_t C5_LINK_FW_VERSION   = 0x0100;  // S3 stage 2
 
+// Wi-Fi scan result queue capacity. Each frame on the wire is ~49 bytes;
+// a worst-case scan of 32 channels with ~30 APs each is ~960 entries.
+// Realistic loads are much smaller; we cap at 64 to bound RAM (~3 KB).
+constexpr size_t   C5_LINK_WIFI_QUEUE_LEN = 64;
+
 HardwareSerial    s_uart(C5_LINK_UART_NUM);
 link_decoder_t    s_decoder;
 SemaphoreHandle_t s_tx_lock = nullptr;
 uint8_t           s_seq = 0;
 bool              s_initialized = false;
 uint32_t          s_last_ping_ms = 0;
+QueueHandle_t     s_wifi_queue = nullptr;
+volatile uint32_t s_wifi_done_scan_id = 0;
 
 void send_frame(uint8_t type, uint8_t seq,
                 const uint8_t *payload, size_t len) {
@@ -115,6 +122,38 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         }
         break;
 
+    case LINK_MSG_WIFI_AP_RESULT:
+        if (len == sizeof(struct link_wifi_ap_result) && s_wifi_queue != nullptr) {
+            struct link_wifi_ap_result r;
+            memcpy(&r, payload, sizeof(r));
+            C5WifiAp ap;
+            ap.scan_id   = r.scan_id;
+            ap.rssi      = r.rssi;
+            ap.channel   = r.channel;
+            memcpy(ap.bssid, r.bssid, 6);
+            ap.auth_mode = r.auth_mode;
+            ap.ssid_len  = r.ssid_len > 32 ? 32 : r.ssid_len;
+            memcpy(ap.ssid, r.ssid, 32);
+            ap.phy_modes = r.phy_modes;
+            // Non-blocking: drop oldest by overwriting if queue is full.
+            if (xQueueSend(s_wifi_queue, &ap, 0) != pdTRUE) {
+                C5WifiAp drop;
+                xQueueReceive(s_wifi_queue, &drop, 0);
+                xQueueSend(s_wifi_queue, &ap, 0);
+            }
+        }
+        break;
+
+    case LINK_MSG_WIFI_SCAN_DONE:
+        if (len == sizeof(struct link_wifi_scan_done)) {
+            struct link_wifi_scan_done d;
+            memcpy(&d, payload, sizeof(d));
+            s_wifi_done_scan_id = d.scan_id;
+            Serial.printf("[c5link] WIFI scan id=%u done aps=%u elapsed=%ums status=%u\n",
+                          (unsigned)d.scan_id, d.ap_count, d.duration_ms, d.status);
+        }
+        break;
+
     case LINK_MSG_STATUS:
         if (len == sizeof(struct link_status_payload)) {
             struct link_status_payload p;
@@ -162,6 +201,7 @@ void c5LinkInit(void) {
         return;
     }
     s_tx_lock = xSemaphoreCreateMutex();
+    s_wifi_queue = xQueueCreate(C5_LINK_WIFI_QUEUE_LEN, sizeof(C5WifiAp));
     link_decoder_init(&s_decoder);
 
     s_uart.setRxBufferSize(1024);
@@ -176,6 +216,38 @@ void c5LinkInit(void) {
                   C5_LINK_UART_NUM,
                   (int)C5_LINK_TX_PIN, (int)C5_LINK_RX_PIN,
                   (unsigned)C5_LINK_BAUD);
+}
+
+bool c5LinkWifiScanStart(uint32_t scan_id,
+                         const uint8_t *channels, uint8_t count,
+                         uint16_t duration_ms, bool passive) {
+    if (!s_initialized) return false;
+    if (count == 0 || channels == nullptr) return false;
+    if (count > LINK_WIFI_MAX_CHANNELS) count = LINK_WIFI_MAX_CHANNELS;
+
+    struct link_wifi_scan_req req;
+    memset(&req, 0, sizeof(req));
+    req.scan_id       = scan_id;
+    req.duration_ms   = duration_ms;
+    req.passive       = passive ? 1 : 0;
+    req.channel_count = count;
+    memcpy(req.channels, channels, count);
+
+    send_frame(LINK_MSG_WIFI_SCAN_REQ, s_seq++,
+               reinterpret_cast<const uint8_t *>(&req), sizeof(req));
+    return true;
+}
+
+bool c5LinkWifiDrainResult(struct C5WifiAp *out) {
+    if (!s_wifi_queue || !out) return false;
+    return xQueueReceive(s_wifi_queue, out, 0) == pdTRUE;
+}
+
+uint32_t c5LinkWifiTakeDoneScanId(void) {
+    // Read + clear atomically as far as a uint32 store can be.
+    uint32_t id = s_wifi_done_scan_id;
+    if (id != 0) s_wifi_done_scan_id = 0;
+    return id;
 }
 
 void c5LinkSendPing(void) {

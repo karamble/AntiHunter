@@ -61,6 +61,24 @@ void link_send_gps_fix(const struct link_gps_fix *fix) {
                (const uint8_t *)fix, sizeof(*fix));
 }
 
+static link_wifi_scan_req_cb s_wifi_scan_req_cb;
+
+void link_register_wifi_scan_req(link_wifi_scan_req_cb cb) {
+    s_wifi_scan_req_cb = cb;
+}
+
+void link_send_wifi_ap_result(const struct link_wifi_ap_result *r) {
+    if (!r) return;
+    send_frame(LINK_MSG_WIFI_AP_RESULT, s_seq++,
+               (const uint8_t *)r, sizeof(*r));
+}
+
+void link_send_wifi_scan_done(const struct link_wifi_scan_done *d) {
+    if (!d) return;
+    send_frame(LINK_MSG_WIFI_SCAN_DONE, s_seq++,
+               (const uint8_t *)d, sizeof(*d));
+}
+
 void link_send_status(void) {
     const uint32_t errs = s_decoder.stats.bad_crc + s_decoder.stats.bad_length +
                           s_decoder.stats.short_frame + s_decoder.stats.overflow;
@@ -105,6 +123,17 @@ static void on_frame(void *ctx, uint8_t type, uint8_t seq,
             ESP_LOGI(TAG, "PONG seq=%u rtt=%" PRIu32 "ms", seq, now_ms() - p.uptime_ms);
         } else {
             ESP_LOGW(TAG, "PONG seq=%u with unexpected len=%u", seq, (unsigned)len);
+        }
+        break;
+
+    case LINK_MSG_WIFI_SCAN_REQ:
+        if (len == sizeof(struct link_wifi_scan_req) && s_wifi_scan_req_cb) {
+            struct link_wifi_scan_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_wifi_scan_req_cb(&req);
+        } else {
+            ESP_LOGW(TAG, "WIFI_SCAN_REQ seq=%u len=%u cb=%p — dropped",
+                     seq, (unsigned)len, s_wifi_scan_req_cb);
         }
         break;
 

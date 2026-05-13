@@ -17,3 +17,15 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # Generic compile-time hardening that doesn't cost us anything.
 CONFIG_COMPILER_WARN_WRITE_STRINGS=y
 CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+
+# Custom partition table — see partitions.csv. The default single-app
+# layout caps the factory partition at 1 MB; we need ~3 MB to fit all the
+# radios we plan to enable (Wi-Fi 5 GHz, BLE 5, IEEE 802.15.4).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The Seeed XIAO ESP32-C5 ships with 4 MB of flash; ESP-IDF defaults to
+# 2 MB for the C5 target. Bump to 4 MB so partitions.csv's 3 MB factory
+# partition has room.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
