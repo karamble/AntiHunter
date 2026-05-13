@@ -22,3 +22,11 @@ CLAUDE.md
 .claude/
 
 hw/pcb/
+
+# ESP-IDF build artifacts for the C5 firmware. sdkconfig.defaults is tracked
+# (source of truth); the generated sdkconfig + build/ are not.
+Halberd/c5/build/
+Halberd/c5/sdkconfig
+Halberd/c5/sdkconfig.old
+Halberd/c5/managed_components/
+Halberd/c5/dependencies.lock
