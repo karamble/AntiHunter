@@ -18,6 +18,7 @@
 #include "baseline.h"
 #include "main.h"
 #include "c5_link.h"
+#include "link_protocol.h"
 
 extern "C"
 {
@@ -135,6 +136,21 @@ static uint32_t triggerC5WifiScan() {
     const uint16_t total_ms = (uint16_t)(rfConfig.wifiChannelTime * C5_WIFI_5GHZ_COUNT);
     c5LinkWifiScanStart(id, C5_WIFI_5GHZ_CHANNELS, C5_WIFI_5GHZ_COUNT,
                         total_ms, /*passive=*/true);
+    return id;
+}
+
+// ── C5 BLE mirror scan (stage 5) ───────────────────────────────────────────
+// Default scan covers 1M PHY (overlap with S3 — dedup catches it) plus
+// Coded PHY (long-range, S3 can't reach). Duration is short to keep
+// pace with the S3's bleScan->getResults() cadence.
+#define C5_BLE_PHY_DEFAULT  (LINK_BLE_PHY_1M | LINK_BLE_PHY_CODED)
+#define C5_BLE_DURATION_MS  2000
+
+static uint32_t triggerC5BleScan() {
+    uint32_t id = millis();
+    c5LinkBleScanStart(id, C5_BLE_DURATION_MS,
+                       C5_BLE_PHY_DEFAULT, /*active=*/false,
+                       /*interval_ms=*/0, /*window_ms=*/0);
     return id;
 }
 
@@ -1287,6 +1303,12 @@ void snifferScanTask(void *pv)
         {
             lastBLEScan = millis();
 
+            // Mirror BLE onto the C5 — adds Coded PHY + extended-adv
+            // coverage the S3's NimBLE-Arduino scan misses. Results
+            // arrive asynchronously and are drained at the bottom of
+            // this block; bleDeviceCache MAC dedup keeps overlap noise out.
+            triggerC5BleScan();
+
             Serial.println("[SNIFFER] Scanning BLE devices...");
 
             if (bleScan)
@@ -1383,6 +1405,61 @@ void snifferScanTask(void *pv)
 
                 bleScan->clearResults();
                 Serial.printf("[SNIFFER] BLE scan found %d devices\n", scanResults.getCount());
+
+                // Drain whatever BLE adverts the C5 streamed back. Same
+                // bleDeviceCache MAC dedup as above so we don't double
+                // count 1M-PHY beacons the S3 already saw; Coded-PHY /
+                // extended-adv records are net-new coverage.
+                C5BleAdv c5adv;
+                int c5BleFound = 0;
+                while (c5LinkBleDrainResult(&c5adv)) {
+                    if (c5adv.rssi < rfConfig.globalRssiThreshold) continue;
+                    char macBuf[18];
+                    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                             c5adv.addr[0], c5adv.addr[1], c5adv.addr[2],
+                             c5adv.addr[3], c5adv.addr[4], c5adv.addr[5]);
+                    String macStr(macBuf);
+                    if (bleDeviceCache.find(macStr) != bleDeviceCache.end()) continue;
+
+                    String name = "Unknown";  // adv-data name extraction is C5-side future work
+                    if (bleDeviceCache.size() < MAX_BLE_CACHE) {
+                        bleDeviceCache[macStr] = name;
+                    }
+                    uniqueMacs.insert(macStr);
+
+                    Hit h;
+                    memcpy(h.mac, c5adv.addr, 6);
+                    h.rssi = c5adv.rssi;
+                    h.ch = 0;
+                    strncpy(h.name, name.c_str(), sizeof(h.name) - 1);
+                    h.name[sizeof(h.name) - 1] = '\0';
+                    h.isBLE = true;
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(h);
+                    }
+
+                    const char *phyTag = (c5adv.primary_phy == 3) ? "Coded" :
+                                         (c5adv.primary_phy == 1) ? "1M" : "?";
+                    String logEntry = String("BLE Device (C5/") + phyTag + "): " + macStr +
+                                      " RSSI: " + String((int)c5adv.rssi) + "dBm";
+                    if (gpsValid) {
+                        if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                            logEntry += " GPS: " + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                            xSemaphoreGive(gpsMutex);
+                        }
+                    }
+                    Serial.println("[SNIFFER] " + logEntry);
+                    logToSD(logEntry);
+
+                    if (matchesMac(h.mac)) {
+                        sendMeshNotification(h);
+                        totalHits = totalHits + 1;
+                    }
+                    c5BleFound++;
+                }
+                if (c5BleFound > 0) {
+                    Serial.printf("[SNIFFER] C5 BLE drained %d adverts\n", c5BleFound);
+                }
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
@@ -4193,6 +4270,10 @@ void listScanTask(void *pv) {
         if ((currentScanMode == SCAN_BLE || currentScanMode == SCAN_BOTH) && pBLEScan &&
             (millis() - lastBLEScan >= rfConfig.bleScanInterval || lastBLEScan == 0)) {
             lastBLEScan = millis();
+            // Mirror to C5 — adds Coded PHY + extended-adv coverage. The
+            // C5's adverts that overlap with S3's onResult callbacks get
+            // filtered out by the deviceLastSeen window below.
+            triggerC5BleScan();
             // pBLEScan->getResults() returns 0 devices in this build because
             // setScanCallbacks(cb, /*wantDuplicates=*/true) routes every
             // advertisement straight into MyBLEScanCallbacks::onResult and
@@ -4287,6 +4368,63 @@ void listScanTask(void *pv) {
             }
             pBLEScan->clearResults();
             bleFramesSeen += scanResults.getCount();
+
+            // Drain C5 BLE adverts. Same deviceLastSeen dedup window as
+            // the S3-side onResult path; target/SSID matching reused.
+            // BLE fingerprint matchesBleFingerprint() needs a
+            // NimBLEAdvertisedDevice and isn't applied here — those
+            // fingerprints will only trip on the S3-side scan, which is
+            // fine since they're 1M-PHY anyway.
+            C5BleAdv c5adv;
+            while (c5LinkBleDrainResult(&c5adv)) {
+                if (!triangulationActive && c5adv.rssi < rfConfig.globalRssiThreshold) continue;
+
+                char macBuf[18];
+                snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         c5adv.addr[0], c5adv.addr[1], c5adv.addr[2],
+                         c5adv.addr[3], c5adv.addr[4], c5adv.addr[5]);
+                String macStr(macBuf);
+
+                uint32_t now = millis();
+                bool shouldProcess = (deviceLastSeen.find(macStr) == deviceLastSeen.end() ||
+                                      (now - deviceLastSeen[macStr] >= DEDUPE_WINDOW));
+                if (!shouldProcess) continue;
+
+                uint8_t mac[6];
+                memcpy(mac, c5adv.addr, 6);
+                bool isMatch;
+                if (triangulationActive) {
+                    if (strlen(triangulationTargetIdentity) > 0) {
+                        isMatch = matchesIdentityMac(triangulationTargetIdentity, mac);
+                    } else {
+                        isMatch = (memcmp(mac, triangulationTarget, 6) == 0);
+                    }
+                } else {
+                    isMatch = matchesMac(mac);
+                }
+
+                uniqueMacs.insert(macStr);
+
+                Hit bh;
+                memcpy(bh.mac, mac, 6);
+                bh.rssi = c5adv.rssi;
+                bh.ch = 0;
+                strncpy(bh.name, "Unknown", sizeof(bh.name) - 1);
+                bh.name[sizeof(bh.name) - 1] = '\0';
+                bh.isBLE = true;
+
+                if (isMatch) {
+                    if (!safeMacQueueSend(&bh, pdMS_TO_TICKS(10))) {
+                        Serial.printf("[SCAN] Queue full for C5 BLE target %s\n", macStr.c_str());
+                    }
+                } else {
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(bh);
+                    }
+                    deviceLastSeen[macStr] = now;
+                }
+                bleFramesSeen++;
+            }
         }
 
         while (safeMacQueueReceive(&h, 0)) {

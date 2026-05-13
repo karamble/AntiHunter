@@ -29,3 +29,18 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # partition has room.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ── BLE (stage 5) ──────────────────────────────────────────────────────────
+# Use NimBLE host stack — BLE 5 features (Coded PHY, extended adv, 2M)
+# matter for what the C5 adds over the S3's NimBLE-Arduino scan.
+# Observer role only: we scan, we never advertise / connect / serve GATT,
+# so peripheral / central / broadcaster roles stay off to save flash and
+# RAM.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+CONFIG_BT_NIMBLE_EXT_ADV=y

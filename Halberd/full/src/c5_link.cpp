@@ -19,6 +19,10 @@ constexpr uint16_t C5_LINK_FW_VERSION   = 0x0100;  // S3 stage 2
 // a worst-case scan of 32 channels with ~30 APs each is ~960 entries.
 // Realistic loads are much smaller; we cap at 64 to bound RAM (~3 KB).
 constexpr size_t   C5_LINK_WIFI_QUEUE_LEN = 64;
+// BLE adv queue. Adverts arrive faster than Wi-Fi APs (many per second
+// per device); the scanner task drains at scan-loop rate, so we size
+// for a few seconds of headroom. Each entry is ~80 B → ~10 KB.
+constexpr size_t   C5_LINK_BLE_QUEUE_LEN = 128;
 
 HardwareSerial    s_uart(C5_LINK_UART_NUM);
 link_decoder_t    s_decoder;
@@ -27,7 +31,9 @@ uint8_t           s_seq = 0;
 bool              s_initialized = false;
 uint32_t          s_last_ping_ms = 0;
 QueueHandle_t     s_wifi_queue = nullptr;
+QueueHandle_t     s_ble_queue = nullptr;
 volatile uint32_t s_wifi_done_scan_id = 0;
+volatile uint32_t s_ble_done_scan_id = 0;
 
 void send_frame(uint8_t type, uint8_t seq,
                 const uint8_t *payload, size_t len) {
@@ -154,6 +160,39 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         }
         break;
 
+    case LINK_MSG_BLE_ADV:
+        if (len == sizeof(struct link_ble_adv) && s_ble_queue != nullptr) {
+            struct link_ble_adv a;
+            memcpy(&a, payload, sizeof(a));
+            C5BleAdv ev;
+            ev.scan_id       = a.scan_id;
+            memcpy(ev.addr, a.addr, 6);
+            ev.addr_type     = a.addr_type;
+            ev.rssi          = a.rssi;
+            ev.primary_phy   = a.primary_phy;
+            ev.secondary_phy = a.secondary_phy;
+            ev.tx_power      = a.tx_power;
+            ev.adv_type      = a.adv_type;
+            ev.adv_data_len  = a.adv_data_len > C5_BLE_ADV_DATA_MAX ? C5_BLE_ADV_DATA_MAX : a.adv_data_len;
+            memcpy(ev.adv_data, a.adv_data, C5_BLE_ADV_DATA_MAX);
+            if (xQueueSend(s_ble_queue, &ev, 0) != pdTRUE) {
+                C5BleAdv drop;
+                xQueueReceive(s_ble_queue, &drop, 0);
+                xQueueSend(s_ble_queue, &ev, 0);
+            }
+        }
+        break;
+
+    case LINK_MSG_BLE_SCAN_DONE:
+        if (len == sizeof(struct link_ble_scan_done)) {
+            struct link_ble_scan_done d;
+            memcpy(&d, payload, sizeof(d));
+            s_ble_done_scan_id = d.scan_id;
+            Serial.printf("[c5link] BLE scan id=%u done advs=%u elapsed=%ums status=%u\n",
+                          (unsigned)d.scan_id, d.adv_count, d.duration_ms, d.status);
+        }
+        break;
+
     case LINK_MSG_STATUS:
         if (len == sizeof(struct link_status_payload)) {
             struct link_status_payload p;
@@ -202,6 +241,7 @@ void c5LinkInit(void) {
     }
     s_tx_lock = xSemaphoreCreateMutex();
     s_wifi_queue = xQueueCreate(C5_LINK_WIFI_QUEUE_LEN, sizeof(C5WifiAp));
+    s_ble_queue  = xQueueCreate(C5_LINK_BLE_QUEUE_LEN,  sizeof(C5BleAdv));
     link_decoder_init(&s_decoder);
 
     s_uart.setRxBufferSize(1024);
@@ -247,6 +287,36 @@ uint32_t c5LinkWifiTakeDoneScanId(void) {
     // Read + clear atomically as far as a uint32 store can be.
     uint32_t id = s_wifi_done_scan_id;
     if (id != 0) s_wifi_done_scan_id = 0;
+    return id;
+}
+
+bool c5LinkBleScanStart(uint32_t scan_id, uint16_t duration_ms,
+                        uint8_t phy_mask, bool active,
+                        uint16_t interval_ms, uint16_t window_ms) {
+    if (!s_initialized) return false;
+
+    struct link_ble_scan_req req;
+    memset(&req, 0, sizeof(req));
+    req.scan_id     = scan_id;
+    req.duration_ms = duration_ms;
+    req.phy_mask    = phy_mask;
+    req.active      = active ? 1 : 0;
+    req.interval_ms = interval_ms;
+    req.window_ms   = window_ms;
+
+    send_frame(LINK_MSG_BLE_SCAN_REQ, s_seq++,
+               reinterpret_cast<const uint8_t *>(&req), sizeof(req));
+    return true;
+}
+
+bool c5LinkBleDrainResult(struct C5BleAdv *out) {
+    if (!s_ble_queue || !out) return false;
+    return xQueueReceive(s_ble_queue, out, 0) == pdTRUE;
+}
+
+uint32_t c5LinkBleTakeDoneScanId(void) {
+    uint32_t id = s_ble_done_scan_id;
+    if (id != 0) s_ble_done_scan_id = 0;
     return id;
 }
 

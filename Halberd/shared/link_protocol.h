@@ -24,6 +24,9 @@ enum link_msg_type {
     LINK_MSG_WIFI_SCAN_REQ   = 0x20,  // S3 → C5, kick a Wi-Fi scan
     LINK_MSG_WIFI_AP_RESULT  = 0x21,  // C5 → S3, one per AP seen in a scan
     LINK_MSG_WIFI_SCAN_DONE  = 0x22,  // C5 → S3, end of a scan
+    LINK_MSG_BLE_SCAN_REQ    = 0x30,  // S3 → C5, kick a BLE scan
+    LINK_MSG_BLE_ADV         = 0x31,  // C5 → S3, one per BLE advertisement event
+    LINK_MSG_BLE_SCAN_DONE   = 0x32,  // C5 → S3, end of a BLE scan
     LINK_MSG_STATUS          = 0xF0,  // periodic health beacon (sender-initiated)
     LINK_MSG_LOG             = 0xFE,  // forwarded log line (C5 → S3, future stage)
 };
@@ -33,6 +36,23 @@ enum link_wifi_scan_status {
     LINK_WIFI_STATUS_OK    = 0,
     LINK_WIFI_STATUS_BUSY  = 1,
     LINK_WIFI_STATUS_ERROR = 2,
+};
+
+// BLE scan status codes returned in link_ble_scan_done.status.
+enum link_ble_scan_status {
+    LINK_BLE_STATUS_OK    = 0,
+    LINK_BLE_STATUS_BUSY  = 1,
+    LINK_BLE_STATUS_ERROR = 2,
+};
+
+// PHY mask bits used in link_ble_scan_req.phy_mask. Multiple bits may be
+// set; the C5 honours whichever its NimBLE config supports. ble_gap_disc
+// itself dispatches on the 1M and Coded PHYs via the extended-scan API
+// when BT_NIMBLE_EXT_ADV is enabled.
+enum link_ble_phy_mask {
+    LINK_BLE_PHY_1M    = 0x01,  // legacy 1 Mbit/s primary
+    LINK_BLE_PHY_2M    = 0x02,  // BLE 5 high-speed (secondary only — no scan on 2M)
+    LINK_BLE_PHY_CODED = 0x04,  // BLE 5 long-range (S=8 / S=2)
 };
 
 // PING / PONG payload.  The receiver echoes this verbatim in the PONG so the
@@ -115,6 +135,52 @@ struct link_wifi_scan_done {
     uint16_t ap_count;       // how many AP_RESULT frames preceded this DONE
     uint16_t duration_ms;    // actual elapsed time
     uint8_t  status;         // link_wifi_scan_status
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+// ── BLE scan (stage 5) ─────────────────────────────────────────────────────
+//
+// Same shape as Wi-Fi: S3 sends BLE_SCAN_REQ, C5 streams one BLE_ADV per
+// observed advertising event, then closes with BLE_SCAN_DONE. The S3
+// applies its existing bleDeviceCache MAC dedup so legacy-PHY adverts the
+// S3 already saw via its own NimBLE-Arduino scan don't double-count; LE
+// Coded / extended-adv records the S3 can't observe pass through naturally.
+
+#define LINK_BLE_ADV_DATA_MAX  62   // legacy 31 + scan response 31; truncate beyond
+#define LINK_BLE_ADDR_LEN      6
+
+struct link_ble_scan_req {
+    uint32_t scan_id;
+    uint16_t duration_ms;       // total scan time before SCAN_DONE
+    uint8_t  phy_mask;          // link_ble_phy_mask bits (1M / 2M / Coded)
+    uint8_t  active;            // 1 = active (request scan response), 0 = passive
+    uint16_t interval_ms;       // scan interval (0 = NimBLE default)
+    uint16_t window_ms;         // scan window  (0 = NimBLE default)
+    uint8_t  reserved[2];
+} __attribute__((packed));
+
+// Single advertising event. `adv_data_len` says how many `adv_data` bytes
+// are significant (the rest are zero-padded). If the C5 sees more than
+// LINK_BLE_ADV_DATA_MAX bytes (extended adv), it truncates and emits the
+// frame anyway — adv_data_len reports what fit.
+struct link_ble_adv {
+    uint32_t scan_id;
+    uint8_t  addr[LINK_BLE_ADDR_LEN];
+    uint8_t  addr_type;         // 0=public, 1=random, 2=public-id, 3=random-id
+    int8_t   rssi;
+    uint8_t  primary_phy;       // 1=1M, 3=Coded (extended adv only otherwise 0)
+    uint8_t  secondary_phy;     // 0=none, 1=1M, 2=2M, 3=Coded
+    int8_t   tx_power;          // dBm if known, INT8_MIN (-128) if unknown
+    uint8_t  adv_type;          // BLE_HCI_ADV_TYPE_* (0=ADV_IND, 1=ADV_DIRECT, etc.)
+    uint8_t  adv_data_len;      // 0..LINK_BLE_ADV_DATA_MAX
+    uint8_t  adv_data[LINK_BLE_ADV_DATA_MAX];
+} __attribute__((packed));
+
+struct link_ble_scan_done {
+    uint32_t scan_id;
+    uint16_t adv_count;
+    uint16_t duration_ms;
+    uint8_t  status;            // link_ble_scan_status
     uint8_t  reserved[3];
 } __attribute__((packed));
 

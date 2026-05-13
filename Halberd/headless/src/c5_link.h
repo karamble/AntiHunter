@@ -59,6 +59,42 @@ bool c5LinkWifiDrainResult(struct C5WifiAp *out);
 // whether the most recent scan finished and which one.
 uint32_t c5LinkWifiTakeDoneScanId(void);
 
+// ── BLE scan API (stage 5) ─────────────────────────────────────────────────
+// One BLE advertising event drained from the C5's scan stream. Fields
+// mirror link_ble_adv in Halberd/shared/link_protocol.h.
+#define C5_BLE_ADV_DATA_MAX 62
+
+struct C5BleAdv {
+    uint32_t scan_id;
+    uint8_t  addr[6];
+    uint8_t  addr_type;       // 0=public, 1=random, 2=public-id, 3=random-id
+    int8_t   rssi;
+    uint8_t  primary_phy;     // 1=1M, 3=Coded, 0=unknown
+    uint8_t  secondary_phy;   // 0=none, 1=1M, 2=2M, 3=Coded
+    int8_t   tx_power;        // dBm, INT8_MIN if unknown
+    uint8_t  adv_type;        // BLE_HCI_ADV_RPT_EVTYPE_* / extended adv props
+    uint8_t  adv_data_len;
+    uint8_t  adv_data[C5_BLE_ADV_DATA_MAX];
+};
+
+// Issue a BLE scan on the C5. Non-blocking; results stream back via the
+// adv queue and are drained with c5LinkBleDrainResult().
+//
+// phy_mask uses link_ble_phy_mask bits (1=1M, 2=2M, 4=Coded). Pass 0x05
+// (1M + Coded) for the typical "everything the S3 can't see" scan.
+// active=true requests scan responses; false is passive (faster, less
+// info). interval_ms and window_ms may be 0 to use NimBLE defaults.
+bool c5LinkBleScanStart(uint32_t scan_id, uint16_t duration_ms,
+                        uint8_t phy_mask, bool active,
+                        uint16_t interval_ms, uint16_t window_ms);
+
+// Drain one buffered BLE advertising event. Returns true and fills *out
+// if a record was available, false if the queue is empty.
+bool c5LinkBleDrainResult(struct C5BleAdv *out);
+
+// Most recent BLE_SCAN_DONE's scan_id (0 if none); clears on read.
+uint32_t c5LinkBleTakeDoneScanId(void);
+
 #ifdef __cplusplus
 }
 #endif

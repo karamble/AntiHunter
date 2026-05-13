@@ -79,6 +79,24 @@ void link_send_wifi_scan_done(const struct link_wifi_scan_done *d) {
                (const uint8_t *)d, sizeof(*d));
 }
 
+static link_ble_scan_req_cb s_ble_scan_req_cb;
+
+void link_register_ble_scan_req(link_ble_scan_req_cb cb) {
+    s_ble_scan_req_cb = cb;
+}
+
+void link_send_ble_adv(const struct link_ble_adv *adv) {
+    if (!adv) return;
+    send_frame(LINK_MSG_BLE_ADV, s_seq++,
+               (const uint8_t *)adv, sizeof(*adv));
+}
+
+void link_send_ble_scan_done(const struct link_ble_scan_done *done) {
+    if (!done) return;
+    send_frame(LINK_MSG_BLE_SCAN_DONE, s_seq++,
+               (const uint8_t *)done, sizeof(*done));
+}
+
 void link_send_status(void) {
     const uint32_t errs = s_decoder.stats.bad_crc + s_decoder.stats.bad_length +
                           s_decoder.stats.short_frame + s_decoder.stats.overflow;
@@ -134,6 +152,17 @@ static void on_frame(void *ctx, uint8_t type, uint8_t seq,
         } else {
             ESP_LOGW(TAG, "WIFI_SCAN_REQ seq=%u len=%u cb=%p — dropped",
                      seq, (unsigned)len, s_wifi_scan_req_cb);
+        }
+        break;
+
+    case LINK_MSG_BLE_SCAN_REQ:
+        if (len == sizeof(struct link_ble_scan_req) && s_ble_scan_req_cb) {
+            struct link_ble_scan_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_ble_scan_req_cb(&req);
+        } else {
+            ESP_LOGW(TAG, "BLE_SCAN_REQ seq=%u len=%u cb=%p — dropped",
+                     seq, (unsigned)len, s_ble_scan_req_cb);
         }
         break;
 

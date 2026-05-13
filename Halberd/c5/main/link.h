@@ -39,6 +39,17 @@ struct link_wifi_scan_req;
 typedef void (*link_wifi_scan_req_cb)(const struct link_wifi_scan_req *req);
 void link_register_wifi_scan_req(link_wifi_scan_req_cb cb);
 
+// Push a BLE advertising event / scan-done frame (see ble.c).
+struct link_ble_adv;
+struct link_ble_scan_done;
+void link_send_ble_adv(const struct link_ble_adv *adv);
+void link_send_ble_scan_done(const struct link_ble_scan_done *done);
+
+// Register a BLE_SCAN_REQ callback (the C5 ble module installs this).
+struct link_ble_scan_req;
+typedef void (*link_ble_scan_req_cb)(const struct link_ble_scan_req *req);
+void link_register_ble_scan_req(link_ble_scan_req_cb cb);
+
 #ifdef __cplusplus
 }
 #endif
