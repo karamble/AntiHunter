@@ -10,6 +10,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
@@ -17,6 +18,8 @@
 #include "link_protocol.h"
 
 static const char *TAG = "wifi";
+
+SemaphoreHandle_t wifi_radio_mutex;
 
 // Default country code. "01" enables passive scan on all globally-permitted
 // channels including DFS bands (52-64, 100-144); omits UNII-3 (149-165)
@@ -37,7 +40,6 @@ static const char *TAG = "wifi";
 #define WIFI_AP_BATCH_CAP          32  // wifi_ap_record_t batch per channel
 
 static QueueHandle_t s_req_queue;
-static volatile bool s_scan_busy;
 
 static uint32_t now_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
@@ -135,7 +137,17 @@ static void wifi_scan_task(void *arg) {
             continue;
         }
 
-        s_scan_busy = true;
+        // Serialise with wifi_sniff.c. If the sniff task is using the radio
+        // we surrender this job rather than block — the S3 will re-arm.
+        if (xSemaphoreTake(wifi_radio_mutex, 0) != pdTRUE) {
+            struct link_wifi_scan_done done = {0};
+            done.scan_id = req.scan_id;
+            done.status  = LINK_WIFI_STATUS_BUSY;
+            link_send_wifi_scan_done(&done);
+            ESP_LOGW(TAG, "scan id=%" PRIu32 " skipped: radio busy (sniff?)",
+                     req.scan_id);
+            continue;
+        }
 
         uint32_t dwell = req.duration_ms / req.channel_count;
         if (dwell < WIFI_MIN_DWELL_MS_PER_CH) dwell = WIFI_MIN_DWELL_MS_PER_CH;
@@ -163,23 +175,14 @@ static void wifi_scan_task(void *arg) {
         ESP_LOGI(TAG, "scan id=%" PRIu32 " done aps=%u elapsed=%ums",
                  req.scan_id, ap_count, done.duration_ms);
 
-        s_scan_busy = false;
+        xSemaphoreGive(wifi_radio_mutex);
     }
 }
 
 static void on_scan_req(const struct link_wifi_scan_req *req) {
-    if (s_scan_busy) {
-        // Tell the S3 we couldn't take the job. Reuse the DONE message
-        // with BUSY status — that's its purpose.
-        struct link_wifi_scan_done done = {0};
-        done.scan_id = req->scan_id;
-        done.status  = LINK_WIFI_STATUS_BUSY;
-        link_send_wifi_scan_done(&done);
-        ESP_LOGW(TAG, "WIFI_SCAN_REQ id=%" PRIu32 " rejected: BUSY", req->scan_id);
-        return;
-    }
     // Copy by value into the task queue; the caller's payload lives on the
-    // link task's stack and we can't hold onto it.
+    // link task's stack and we can't hold onto it. Radio-busy check happens
+    // inside the scan task itself so we don't race against the sniff task.
     if (xQueueSend(s_req_queue, req, 0) != pdTRUE) {
         struct link_wifi_scan_done done = {0};
         done.scan_id = req->scan_id;
@@ -213,6 +216,11 @@ void wifi_init(void) {
 
     s_req_queue = xQueueCreate(WIFI_SCAN_QUEUE_LEN, sizeof(struct link_wifi_scan_req));
     configASSERT(s_req_queue != NULL);
+
+    // Shared lock for scan + sniff tasks. Must be created before either
+    // task is spawned; wifi_sniff_init() is called by main after we return.
+    wifi_radio_mutex = xSemaphoreCreateMutex();
+    configASSERT(wifi_radio_mutex != NULL);
 
     link_register_wifi_scan_req(on_scan_req);
 

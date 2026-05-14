@@ -39,6 +39,17 @@ struct link_wifi_scan_req;
 typedef void (*link_wifi_scan_req_cb)(const struct link_wifi_scan_req *req);
 void link_register_wifi_scan_req(link_wifi_scan_req_cb cb);
 
+// Wi-Fi probe sniffer (stage 8). PROBE_EVENT streams while a sniff is
+// running; PROBE_DONE closes the window. Same shape as the scan trio.
+struct link_wifi_probe_event;
+struct link_wifi_probe_done;
+void link_send_wifi_probe_event(const struct link_wifi_probe_event *ev);
+void link_send_wifi_probe_done(const struct link_wifi_probe_done *done);
+
+struct link_wifi_probe_req;
+typedef void (*link_wifi_probe_req_cb)(const struct link_wifi_probe_req *req);
+void link_register_wifi_probe_req(link_wifi_probe_req_cb cb);
+
 // Push a BLE advertising event / scan-done frame (see ble.c).
 struct link_ble_adv;
 struct link_ble_scan_done;

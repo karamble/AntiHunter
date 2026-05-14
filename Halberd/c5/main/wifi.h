@@ -8,10 +8,21 @@
 // fires a scan request with the 5 GHz channel list while it runs its own
 // 2.4 GHz scan via WiFi.scanNetworks() on the Arduino side. Results stream
 // back as LINK_MSG_WIFI_AP_RESULT, capped by a LINK_MSG_WIFI_SCAN_DONE.
+//
+// wifi_radio_mutex (stage 8) serialises radio access between this module
+// and wifi_sniff.c. Either the scan task or the sniff task may hold it at
+// any time; whichever doesn't gets WIFI_STATUS_BUSY. The mutex is created
+// by wifi_init() before either user starts so wifi_sniff_init() is free
+// to call into it.
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+extern SemaphoreHandle_t wifi_radio_mutex;
 
 void wifi_init(void);
 

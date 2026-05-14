@@ -79,6 +79,24 @@ void link_send_wifi_scan_done(const struct link_wifi_scan_done *d) {
                (const uint8_t *)d, sizeof(*d));
 }
 
+static link_wifi_probe_req_cb s_wifi_probe_req_cb;
+
+void link_register_wifi_probe_req(link_wifi_probe_req_cb cb) {
+    s_wifi_probe_req_cb = cb;
+}
+
+void link_send_wifi_probe_event(const struct link_wifi_probe_event *ev) {
+    if (!ev) return;
+    send_frame(LINK_MSG_WIFI_PROBE_EVENT, s_seq++,
+               (const uint8_t *)ev, sizeof(*ev));
+}
+
+void link_send_wifi_probe_done(const struct link_wifi_probe_done *done) {
+    if (!done) return;
+    send_frame(LINK_MSG_WIFI_PROBE_DONE, s_seq++,
+               (const uint8_t *)done, sizeof(*done));
+}
+
 static link_ble_scan_req_cb s_ble_scan_req_cb;
 
 void link_register_ble_scan_req(link_ble_scan_req_cb cb) {
@@ -196,6 +214,17 @@ static void on_frame(void *ctx, uint8_t type, uint8_t seq,
         } else {
             ESP_LOGW(TAG, "WIFI_SCAN_REQ seq=%u len=%u cb=%p — dropped",
                      seq, (unsigned)len, s_wifi_scan_req_cb);
+        }
+        break;
+
+    case LINK_MSG_WIFI_PROBE_REQ:
+        if (len == sizeof(struct link_wifi_probe_req) && s_wifi_probe_req_cb) {
+            struct link_wifi_probe_req req;
+            memcpy(&req, payload, sizeof(req));
+            s_wifi_probe_req_cb(&req);
+        } else {
+            ESP_LOGW(TAG, "WIFI_PROBE_REQ seq=%u len=%u cb=%p — dropped",
+                     seq, (unsigned)len, s_wifi_probe_req_cb);
         }
         break;
 

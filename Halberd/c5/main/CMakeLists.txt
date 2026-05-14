@@ -3,6 +3,7 @@ idf_component_register(
          "link.c"
          "gps.c"
          "wifi.c"
+         "wifi_sniff.c"
          "ble.c"
          "ieee802154.c"
          "exp.c"

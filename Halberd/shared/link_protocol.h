@@ -24,6 +24,9 @@ enum link_msg_type {
     LINK_MSG_WIFI_SCAN_REQ   = 0x20,  // S3 → C5, kick a Wi-Fi scan
     LINK_MSG_WIFI_AP_RESULT  = 0x21,  // C5 → S3, one per AP seen in a scan
     LINK_MSG_WIFI_SCAN_DONE  = 0x22,  // C5 → S3, end of a scan
+    LINK_MSG_WIFI_PROBE_REQ   = 0x23, // S3 → C5, kick a 5 GHz probe sniff
+    LINK_MSG_WIFI_PROBE_EVENT = 0x24, // C5 → S3, one per probe req/resp captured
+    LINK_MSG_WIFI_PROBE_DONE  = 0x25, // C5 → S3, end of a probe sniff window
     LINK_MSG_BLE_SCAN_REQ    = 0x30,  // S3 → C5, kick a BLE scan
     LINK_MSG_BLE_ADV         = 0x31,  // C5 → S3, one per BLE advertisement event
     LINK_MSG_BLE_SCAN_DONE   = 0x32,  // C5 → S3, end of a BLE scan
@@ -200,6 +203,55 @@ struct link_wifi_scan_done {
     uint16_t ap_count;       // how many AP_RESULT frames preceded this DONE
     uint16_t duration_ms;    // actual elapsed time
     uint8_t  status;         // link_wifi_scan_status
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+// ── Wi-Fi 5 GHz probe sniff (stage 8) ──────────────────────────────────────
+//
+// Probe-detection mode on the S3 captures 802.11 management frames in
+// promiscuous mode on the 2.4 GHz band already. PROBE_REQ asks the C5 to
+// do the same on 5 GHz: bring up promiscuous-mode RX, hop the supplied
+// channel list, and emit one PROBE_EVENT per captured frame. Mutually
+// exclusive on the C5 with a Wi-Fi scan (both drive the same radio).
+//
+// Frame scope:
+//   - probe requests (FCF type=0, stype=4) — always captured
+//   - probe responses (FCF type=0, stype=5) — captured iff capture_responses=1
+//
+// Payload carries the raw 802.11 management frame from the FCF byte
+// onward (MAC header + body), truncated to LINK_WIFI_PROBE_PAYLOAD_MAX,
+// so the S3 can hand it directly to its existing IE-parsing helpers.
+
+#define LINK_WIFI_PROBE_PAYLOAD_MAX  128  // matches S3 ProbeRequestEvent.payload
+
+struct link_wifi_probe_req {
+    uint32_t scan_id;
+    uint16_t duration_ms;       // 1..65000; total dwell across channels
+    uint8_t  capture_responses; // 1 = also capture stype 5 (probe response)
+    uint8_t  channel_count;     // 1..LINK_WIFI_MAX_CHANNELS
+    uint8_t  channels[LINK_WIFI_MAX_CHANNELS];
+} __attribute__((packed));
+
+// One captured probe frame. `payload` begins at the FCF byte of the MAC
+// header; `payload_len` reports how many bytes are significant.
+struct link_wifi_probe_event {
+    uint32_t scan_id;
+    int8_t   rssi;
+    uint8_t  channel;
+    uint8_t  is_response;       // 0 = probe req, 1 = probe resp
+    uint8_t  reserved;
+    uint8_t  src_mac[6];        // addr2 (probing client OR responding AP)
+    uint8_t  dst_mac[6];        // addr1 (broadcast for req, client for resp)
+    uint8_t  bssid[6];          // addr3
+    uint16_t payload_len;       // 0..LINK_WIFI_PROBE_PAYLOAD_MAX
+    uint8_t  payload[LINK_WIFI_PROBE_PAYLOAD_MAX];
+} __attribute__((packed));
+
+struct link_wifi_probe_done {
+    uint32_t scan_id;
+    uint16_t event_count;
+    uint16_t duration_ms;
+    uint8_t  status;            // reuses link_wifi_scan_status (OK/BUSY/ERROR)
     uint8_t  reserved[3];
 } __attribute__((packed));
 

@@ -21,12 +21,13 @@
 #include "ieee802154.h"
 #include "link.h"
 #include "wifi.h"
+#include "wifi_sniff.h"
 
 static const char *TAG = "halberd-c5";
 
 void app_main(void) {
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, " Halberd C5 firmware — stage 7 (expansion bus)");
+    ESP_LOGI(TAG, " Halberd C5 firmware — stage 8 (5 GHz probe sniffer)");
     ESP_LOGI(TAG, " feat/c5-firmware, ESP-IDF " IDF_VER);
     ESP_LOGI(TAG, "================================================");
 
@@ -62,6 +63,7 @@ void app_main(void) {
     link_init();
     gps_init();
     wifi_init();
+    wifi_sniff_init();
     ble_init();
     ieee802154_init();
     exp_init();

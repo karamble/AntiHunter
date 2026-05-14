@@ -59,6 +59,40 @@ bool c5LinkWifiDrainResult(struct C5WifiAp *out);
 // whether the most recent scan finished and which one.
 uint32_t c5LinkWifiTakeDoneScanId(void);
 
+// ── Wi-Fi 5 GHz probe sniffer API (stage 8) ────────────────────────────────
+// One captured probe frame drained from the C5's promiscuous-mode sniff
+// stream. Fields mirror link_wifi_probe_event in
+// Halberd/shared/link_protocol.h. `payload` carries the raw 802.11 mgmt
+// frame from the FCF byte onward so the existing extractSsidFromProbe()
+// / extractSsidFromIE() helpers work unchanged.
+#define C5_WIFI_PROBE_PAYLOAD_MAX 128
+
+struct C5WifiProbeEvent {
+    uint32_t scan_id;
+    int8_t   rssi;
+    uint8_t  channel;
+    uint8_t  is_response;     // 0 = probe req, 1 = probe resp
+    uint8_t  src_mac[6];
+    uint8_t  dst_mac[6];
+    uint8_t  bssid[6];
+    uint16_t payload_len;
+    uint8_t  payload[C5_WIFI_PROBE_PAYLOAD_MAX];
+};
+
+// Kick a 5 GHz probe sniff on the C5. Non-blocking: events stream back
+// via the probe queue and are drained with c5LinkWifiProbeDrainResult().
+//
+// `channels` carries 5 GHz channel numbers (36..165). `duration_ms` is the
+// total dwell budget across channels; the C5 divides + clamps internally.
+// capture_responses=true tells the C5 to also queue probe-response frames
+// (mgmt stype=5), letting the S3 build responding-AP↔device mappings.
+bool c5LinkWifiProbeSniffStart(uint32_t scan_id,
+                               const uint8_t *channels, uint8_t count,
+                               uint16_t duration_ms, bool capture_responses);
+
+bool c5LinkWifiProbeDrainResult(struct C5WifiProbeEvent *out);
+uint32_t c5LinkWifiProbeTakeDoneScanId(void);
+
 // ── BLE scan API (stage 5) ─────────────────────────────────────────────────
 // One BLE advertising event drained from the C5's scan stream. Fields
 // mirror link_ble_adv in Halberd/shared/link_protocol.h.
