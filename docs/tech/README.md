@@ -7,38 +7,38 @@ architecture, the on-the-wire formats, the build system, and how to
 add new code without breaking existing consumers.
 
 If you just want to **run** a Halberd, the
-[user handbook](../user/README.md) is the right entry point.
+[user handbook](./user/README.md) is the right entry point.
 
 ## Start here
 
-- [Architecture overview](architecture.md) — S3 + C5 + Heltec
-  sidekick; how a Halberd talks to peers and to the diginode-cc
-  fleet server.
-- [Design decisions log](decisions.md) — the *why* behind non-obvious
-  choices (ESP-IDF on the C5, COBS+CRC framing, single-radio
-  scheduling, …).
-- [Roadmap](roadmap.md) — what's planned, what's a candidate, what's
-  intentionally out of scope.
+- [Architecture overview](architecture.md). S3 + C5 + Heltec
+ sidekick. How a Halberd talks to peers and to the diginode-cc
+ fleet server.
+- [Design decisions log](decisions.md). The *why* behind non-obvious
+ choices (ESP-IDF on the C5, COBS+CRC framing, single-radio
+ scheduling, …).
+- [Roadmap](roadmap.md). What's planned, what's a candidate, what's
+ intentionally out of scope.
 
 ## Firmware
 
-- [Layout](firmware/layout.md) — three firmware trees plus the shared
-  protocol library.
-- [Variants](firmware/variants.md) — what differs between
-  `halberd-full` and `halberd-headless`.
-- [Build + flash](firmware/build.md) — PlatformIO + ESP-IDF setup,
-  `Makefile` targets, lint, port wrangling.
-- [C5 coprocessor](firmware/c5-coprocessor.md) — what the C5 does,
-  how stages are organised on the `feat/c5-firmware` branch.
+- [Layout](firmware/layout.md). Three firmware trees plus the shared
+ protocol library.
+- [Variants](firmware/variants.md). What differs between
+ `halberd-full` and `halberd-headless`.
+- [Build + flash](firmware/build.md). PlatformIO + ESP-IDF setup,
+ `Makefile` targets, lint, port wrangling.
+- [C5 coprocessor](firmware/c5-coprocessor.md). What the C5 does,
+ how stages are organised on the `feat/c5-firmware` branch.
 
 ## Protocols
 
-- [S3 ↔ C5 link protocol](protocols/link.md) — COBS framing, CRC-16,
-  message type registry, payload layouts.
-- [Mesh protocol](protocols/mesh.md) — halberd ↔ diginode-cc message
-  format over Meshtastic.
-- [OpenDroneID parsing](protocols/opendroneid.md) — ASTM F3411
-  Remote ID structures Halberd decodes off the air.
+- [S3 ↔ C5 link protocol](protocols/link.md). COBS framing, CRC-16,
+ message type registry, payload layouts.
+- [Mesh protocol](protocols/mesh.md). Halberd ↔ diginode-cc message
+ format over Meshtastic.
+- [OpenDroneID parsing](protocols/opendroneid.md). ASTM F3411
+ Remote ID structures Halberd decodes off the air.
 
 ## Extending
 
@@ -48,5 +48,5 @@ If you just want to **run** a Halberd, the
 
 ## Reference
 
-- [REST API reference](api-rest.md) — every HTTP endpoint exposed by
-  `halberd-full`.
+- [REST API reference](api-rest.md). Every HTTP endpoint exposed by
+ `halberd-full`.

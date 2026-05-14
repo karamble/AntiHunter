@@ -23,9 +23,9 @@ Halberd/
 Plus, off-tree:
 
 - **Heltec V3** runs stock Meshtastic (no Halberd code on it). The
-  script `scripts/flash-heltec-meshtastic.sh` downloads a specific
-  Meshtastic release and applies a configuration that pairs the
-  Heltec with the Halberd S3 over UART1.
+ script `scripts/flash-heltec-meshtastic.sh` downloads a specific
+ Meshtastic release and applies a configuration that pairs the
+ Heltec with the Halberd S3 over UART1.
 
 ## halberd-full (S3, with web UI)
 
@@ -59,7 +59,7 @@ or single-node demos.
 | Flash | `make flash-headless` |
 
 Same scanning + detection + triangulation code as `halberd-full`.
-Configured entirely via Meshtastic mesh messages — no local web UI.
+Configured entirely via Meshtastic mesh messages. No local web UI.
 The right variant for fleet deployments where diginode-cc or another
 node drives every operation.
 
@@ -74,31 +74,31 @@ node drives every operation.
 | Flash | `make c5-flash` (default `C5_PORT=/dev/ttyACM1`) |
 | Monitor | `make c5-monitor` (`Ctrl-]` to exit) |
 | Console | USB Serial/JTAG (separate from UART0, which is the S3 link) |
-| Binary | ~1.27 MB after stage 8; 60% of the 3 MB factory partition free |
+| Binary | ~1.27 MB after stage 8. 60% of the 3 MB factory partition free |
 
 The C5 firmware talks ESP-IDF natively because 802.15.4 has no
 Arduino-ESP32 wrapper and the latest BLE 5 features benefit from
 direct native NimBLE host access. See
 [C5 coprocessor](c5-coprocessor.md) for the per-module breakdown and
-[decisions log](../decisions.md) for the toolchain rationale.
+[decisions log](./decisions.md) for the toolchain rationale.
 
-## Shared library — `Halberd/shared/`
+## Shared library. `Halberd/shared/`
 
 Pure C, no platform dependencies. Both the IDF build (C5) and the
 PIO builds (S3 variants) pull this in:
 
-- **`link_codec.h` / `link_codec.c`** — COBS encoder + streaming
-  decoder with CRC-16/CCITT-FALSE. ~250 LOC, table-free.
-- **`link_protocol.h`** — `enum link_msg_type` and packed payload
-  structs. Single source of truth, identical bytes on both sides.
+- **`link_codec.h` / `link_codec.c`**. COBS encoder + streaming
+ decoder with CRC-16/CCITT-FALSE. ~250 LOC, table-free.
+- **`link_protocol.h`**. `enum link_msg_type` and packed payload
+ structs. Single source of truth, identical bytes on both sides.
 
 How each build picks the sources up:
 
 - **C5 (IDF)**: `Halberd/c5/main/CMakeLists.txt` adds
-  `../../shared/link_codec.c` to `SRCS` and `../../shared` to
-  `INCLUDE_DIRS`.
+ `../../shared/link_codec.c` to `SRCS` and `../../shared` to
+ `INCLUDE_DIRS`.
 - **S3 (PIO)**: each env has `build_src_filter = ...+<Halberd/shared/*>`
-  and `build_flags = ... -IHalberd/shared`.
+ and `build_flags = ... -IHalberd/shared`.
 
 The shared header is `extern "C"`-wrapped for C++ callers (Arduino).
 
@@ -129,16 +129,16 @@ After stage 8 (commit `00443a1`):
 | `halberd-full` | `firmware.bin` | 1.65 MB | RAM 16.5%, flash 51.6% |
 
 The C5 partition was bumped from the IDF default (1 MB) to 3 MB in
-stage 4 — the Wi-Fi stack alone produces a 912 KB binary; later
+stage 4. The Wi-Fi stack alone produces a 912 KB binary. Later
 stages would overflow. The whole multi-radio + I²C/GPIO firmware
 now lives in 1.27 MB with 1.73 MB of headroom for future stages or
 OTA.
 
 ## See also
 
-- [Variants](variants.md) — `halberd-full` vs `halberd-headless`
-  in detail.
-- [Build + flash](build.md) — toolchain setup and `Makefile`
-  targets.
-- [C5 coprocessor](c5-coprocessor.md) — what the C5 firmware
-  actually does, stage-by-stage.
+- [Variants](variants.md). `halberd-full` vs `halberd-headless`
+ in detail.
+- [Build + flash](build.md). Toolchain setup and `Makefile`
+ targets.
+- [C5 coprocessor](c5-coprocessor.md). What the C5 firmware
+ actually does, stage-by-stage.

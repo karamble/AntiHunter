@@ -6,7 +6,7 @@ CCITT-FALSE** + a single-byte message type + a single-byte length +
 a packed binary payload. This page is the authoritative wire-format
 reference. The header file at
 [`Halberd/shared/link_protocol.h`](https://github.com/karamble/halberd/blob/main/Halberd/shared/link_protocol.h)
-is the single source of truth — if it disagrees with this page, the
+is the single source of truth. If it disagrees with this page, the
 header wins.
 
 ## Physical wiring
@@ -30,13 +30,13 @@ Pre-encoding body:
    [type:1] [seq:1] [len:1] [payload:0..255] [crc16_lo:1] [crc16_hi:1]
 ```
 
-- **type** — 1 byte, see [message-type registry](#message-type-registry).
-- **seq** — 1 byte, sender-incrementing counter (wraps freely;
-  receivers echo it in replies so the sender can correlate).
-- **len** — 1 byte, payload length 0..255.
-- **payload** — `len` bytes; layout depends on type.
-- **crc16** — CRC-16/CCITT-FALSE over `[type][seq][len][payload]`,
-  transmitted little-endian.
+- **type**. 1 byte, see [message-type registry](#message-type-registry).
+- **seq**. 1 byte, sender-incrementing counter (wraps freely.
+ receivers echo it in replies so the sender can correlate).
+- **len**. 1 byte, payload length 0.255.
+- **payload**. `len` bytes. Layout depends on type.
+- **crc16**. CRC-16/CCITT-FALSE over `[type][seq][len][payload]`,
+ transmitted little-endian.
 
 COBS encoding turns 0x00 bytes in the body into offset markers and
 appends a single 0x00 frame delimiter. The decoder scans for 0x00
@@ -58,7 +58,7 @@ Worst-case wire bytes for a 255-byte payload ≈ 263.
 
 Same as XMODEM-CRC. Implementation in
 [`Halberd/shared/link_codec.c`](https://github.com/karamble/halberd/blob/main/Halberd/shared/link_codec.c)
-function `link_crc16` — standard 8-bit-at-a-time loop, no lookup
+function `link_crc16`. Standard 8-bit-at-a-time loop, no lookup
 table.
 
 ### Why COBS, not SLIP
@@ -98,7 +98,7 @@ with high-rate BLE adv / Wi-Fi mass-scan streams.
 | 0x60 | `LINK_MSG_GPIO_REQ` | S3 → C5 | 7 | `link_gpio_req` (12 B) |
 | 0x61 | `LINK_MSG_GPIO_RESP` | C5 → S3 | 7 | `link_gpio_resp` (8 B) |
 | 0xF0 | `LINK_MSG_STATUS` | bidirectional (30 s) | 2 | `link_status_payload` (16 B) |
-| 0xFE | `LINK_MSG_LOG` | C5 → S3 (future) | — | TBD |
+| 0xFE | `LINK_MSG_LOG` | C5 → S3 (future) |. | TBD |
 
 Type bytes are grouped by feature: `0x0x` control, `0x1x` GPS,
 `0x2x` Wi-Fi, `0x3x` BLE, `0x4x` 802.15.4, `0x5x` I²C, `0x6x` GPIO,
@@ -110,7 +110,7 @@ without renumbering.
 All structs are `__attribute__((packed))`. Multi-byte integers are
 little-endian.
 
-### `link_ping_payload` — 4 bytes
+### `link_ping_payload`. 4 bytes
 
 ```c
 struct link_ping_payload {
@@ -121,7 +121,7 @@ struct link_ping_payload {
 The receiver replies with `PONG` carrying the same bytes verbatim so
 the originator computes round-trip time as `now - uptime_ms`.
 
-### `link_gps_fix` — 32 bytes
+### `link_gps_fix`. 32 bytes
 
 ```c
 struct link_gps_fix {
@@ -144,7 +144,7 @@ struct link_gps_fix {
 
 The C5 pushes one per second from `gps.c::gps_task`. The S3 caches
 the most recent frame and treats it as authoritative until 30 s
-elapse without a new frame — see `hardware.cpp::updateGPSLocation`,
+elapse without a new frame. See `hardware.cpp::updateGPSLocation`,
 now a freshness watchdog rather than a UART reader.
 
 ### Wi-Fi scan triplet (stage 4)
@@ -182,7 +182,7 @@ struct link_wifi_scan_done {
 };
 ```
 
-`duration_ms` is the total budget; the C5 divides by `channel_count`
+`duration_ms` is the total budget. The C5 divides by `channel_count`
 and clamps each per-channel dwell to `[80, 500] ms`. AP_RESULT
 frames stream first, then the matching DONE. A REQ that arrives
 mid-scan gets an immediate DONE with `status = BUSY`.
@@ -269,7 +269,7 @@ struct link_ble_scan_done {
 ```
 
 C5 defaults to passive scans with `1M + Coded`. Same single-scan-
-at-a-time semantics as Wi-Fi — concurrent REQ → DONE+BUSY.
+at-a-time semantics as Wi-Fi. Concurrent REQ → DONE+BUSY.
 
 ### IEEE 802.15.4 detection triplet (stage 6)
 
@@ -324,7 +324,7 @@ dispatch byte / PAN ID for data + command frames).
 Synchronous request/response over the link. The S3 generates a
 `request_id`, sends a `*_REQ`, blocks until the matching `*_RESP`
 arrives or the timeout expires. Only one expansion op may be in
-flight; the S3-side helper serialises with a mutex.
+flight. The S3-side helper serialises with a mutex.
 
 ```c
 // I²C read
@@ -382,7 +382,7 @@ struct link_gpio_resp {
 };
 ```
 
-### `link_status_payload` — 16 bytes
+### `link_status_payload`. 16 bytes
 
 ```c
 struct link_status_payload {
@@ -396,7 +396,7 @@ struct link_status_payload {
 ```
 
 Both sides emit one every 30 s. `rx_frame_err` spiking means link
-integrity is degrading — usually a sign of a flaky UART connection
+integrity is degrading. Usually a sign of a flaky UART connection
 or a sender overrunning the receive buffer.
 
 ## Codec API
@@ -430,7 +430,7 @@ void link_decoder_feed(link_decoder_t *d, const uint8_t *bytes, size_t n,
                        link_frame_cb cb, void *ctx);
 ```
 
-Feed bytes from UART RX; the callback fires once per validated
+Feed bytes from UART RX. The callback fires once per validated
 frame. Malformed frames are silently dropped, with the cause counted
 in `stats`.
 
@@ -439,25 +439,25 @@ in `stats`.
 `Halberd/c5/main/link.c` runs a hard-coded round-trip on boot:
 
 1. Build a frame with payload `{0x00, 0xFF, 0x42, 0x00, 0x01, 0xAA}`
-   (contains zeros, so COBS gets exercised).
+ (contains zeros, so COBS gets exercised).
 2. `link_encode` → `link_decoder_feed` → assert exact byte-for-byte
-   match.
+ match.
 3. Log `selftest OK` or a diagnostic line with the decoder stats.
 
 This catches codec arithmetic regressions without needing an S3
-peer wired up. The S3 doesn't yet have an equivalent — see
-[decisions](../decisions.md).
+peer wired up. The S3 doesn't yet have an equivalent. See
+[decisions](./decisions.md).
 
 ## Heartbeats and scheduling
 
 - **PING / PONG**: each side every 5 s, offset slightly so they
-  don't always interleave.
+ don't always interleave.
 - **STATUS**: each side every 30 s.
 - **GPS_FIX**: C5 → S3 every 1 s.
 - **Scan jobs**: one at a time. The C5 holds a `wifi_radio_mutex`
-  to serialise the active-scan task and the probe-sniff task on the
-  Wi-Fi side, and the BLE / 802.15.4 / Wi-Fi front-ends share the
-  2.4 GHz radio time-sliced by IDF.
+ to serialise the active-scan task and the probe-sniff task on the
+ Wi-Fi side, and the BLE / 802.15.4 / Wi-Fi front-ends share the
+ 2.4 GHz radio time-sliced by IDF.
 
 ## Debugging on the host
 
@@ -471,8 +471,8 @@ USB Serial/JTAG console is a candidate convenience.
 
 ## See also
 
-- [Adding a link message type](../extending/new-link-message.md) —
-  how to register a new trio.
-- [C5 coprocessor](../firmware/c5-coprocessor.md) — the responder
-  side.
-- [Decisions log](../decisions.md) — framing rationale.
+- [Adding a link message type](./extending/new-link-message.md).
+ how to register a new trio.
+- [C5 coprocessor](./firmware/c5-coprocessor.md). The responder
+ side.
+- [Decisions log](./decisions.md). Framing rationale.

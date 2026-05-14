@@ -15,14 +15,14 @@ movement.
 
 ## What this page will cover
 
-- `BASELINE_START:<seconds>[:FOREVER]` — duration vs FOREVER mode.
+- `BASELINE_START:<seconds>[:FOREVER]`. Duration vs FOREVER mode.
 - The state machine: **learn phase** (build the baseline) →
-  **monitor phase** (detect anomalies against it).
+ **monitor phase** (detect anomalies against it).
 - How long to learn for, in practice (rule of thumb: 3–10× the
-  longest normal-presence cycle in the environment).
+ longest normal-presence cycle in the environment).
 - RSSI anomaly thresholds: what counts as "moved", what doesn't.
 - Output: anomaly alerts on the mesh, baseline DB persisted to SD,
-  stats reachable via web UI / API on `halberd-full`.
+ stats reachable via web UI / API on `halberd-full`.
 - Resetting the baseline if the environment changes.
 - Tiering: RAM-resident baseline of 200–500 devices, SD overflow.
 
@@ -34,6 +34,6 @@ new device on day 3.
 ## See also
 
 - [Device scan](device-scan.md) for the underlying enumeration that
-  feeds the baseline.
+ feeds the baseline.
 - [Triangulation](triangulation.md) for positioning new arrivals
-  detected by baseline.
+ detected by baseline.

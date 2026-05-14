@@ -1,6 +1,6 @@
 # Halberd documentation
 
-Halberd is a self-contained tactical SIGINT mesh sensor — a small,
+Halberd is a self-contained tactical SIGINT mesh sensor. A small,
 battery-powered ESP32-based node that scans Wi-Fi, BLE, and (on the
 v5 hardware) 802.15.4, hunts targets by MAC, detects deauth attacks
 and OpenDroneID drones, baselines an area and alerts on anomalies,
@@ -27,8 +27,8 @@ initial configuration end-to-end.
 
 ## Other repo docs
 
-- [`README.md`](../README.md) — repo overview, features, full command
-  reference, API reference.
-- [`CONTRIBUTING.md`](../CONTRIBUTING.md) — PR workflow + hardware-
-  testing conventions.
-- [`SECURITY.md`](../SECURITY.md) — responsible-disclosure policy.
+- [`README.md`](./README.md). Repo overview, features, full command
+ reference, API reference.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md). PR workflow + hardware-
+ testing conventions.
+- [`SECURITY.md`](./SECURITY.md). Responsible-disclosure policy.

@@ -1,8 +1,8 @@
-# Mesh protocol — halberd ↔ diginode-cc
+# Mesh protocol. Halberd ↔ diginode-cc
 
 Halberd nodes talk to each other and to the `diginode-cc` fleet
 server over Meshtastic. The wire format is **line-oriented text
-frames** on the Meshtastic TEXTMSG channel — readable, easy to
+frames** on the Meshtastic TEXTMSG channel. Readable, easy to
 parse, dispatched on the first token. This page is the integration
 reference for anyone implementing the protocol on a non-Halberd
 peer.
@@ -24,7 +24,7 @@ the Heltec, which forwards them on the mesh. Receives travel the
 same path in reverse and land in the S3's dispatcher.
 
 There's no chunking today. Reply frames must fit in a single
-`MAX_MESH_SIZE` packet; if a result is too large, the firmware
+`MAX_MESH_SIZE` packet. If a result is too large, the firmware
 trims rather than splitting.
 
 ## Frame format
@@ -54,7 +54,7 @@ TRIANGULATE_START:AA:BB:CC:DD:EE:FF:120:indoor
 ```
 
 The dispatcher splits on `:` and routes by the first token. Unknown
-commands are silently dropped; known commands return a one-line
+commands are silently dropped. Known commands return a one-line
 ACK (`<NODE>: <COMMAND>_ACK:<STATUS>`) before doing any work.
 
 ## ACK envelope
@@ -65,17 +65,17 @@ ACK (`<NODE>: <COMMAND>_ACK:<STATUS>`) before doing any work.
 
 `STATUS` is one of:
 
-- **`STARTED`** — the command was accepted and a worker task has
-  been spawned. Subsequent result frames follow.
-- **`STOPPED`** — the command was a stop / cancel and the running
-  job was halted.
-- **`BUSY`** — another scan / detection task was already running;
-  the new command was rejected. Caller retries later.
-- **`INVALID`** — the command parsed but the arguments were
-  out-of-range or otherwise unusable.
-- **`OK`** — for queries that return inline data, the value is
-  in the same frame.
-- **`ERR:<reason>`** — generic failure with a short hint.
+- **`STARTED`**. The command was accepted and a worker task has
+ been spawned. Subsequent result frames follow.
+- **`STOPPED`**. The command was a stop / cancel and the running
+ job was halted.
+- **`BUSY`**. Another scan / detection task was already running.
+ the new command was rejected. Caller retries later.
+- **`INVALID`**. The command parsed but the arguments were
+ out-of-range or otherwise unusable.
+- **`OK`**. For queries that return inline data, the value is
+ in the same frame.
+- **`ERR:<reason>`**. Generic failure with a short hint.
 
 Every long-running command (scans, detection modes,
 triangulation) emits exactly one ACK. Results stream as separate
@@ -120,9 +120,9 @@ All commands accepted on the mesh. Each is parsed in
 Argument grammar:
 
 - `mode` ∈ `{0=Wi-Fi, 1=BLE, 2=both}`.
-- `secs` is in seconds; `FOREVER` runs until `STOP`.
+- `secs` is in seconds. `FOREVER` runs until `STOP`.
 - `channels` is a comma-separated channel list (e.g.
-  `1,6,11,36,40`).
+ `1,6,11,36,40`).
 - `target` is a MAC address in `AA:BB:CC:DD:EE:FF` form.
 - `rfEnv` ∈ `{open, suburban, indoor, indoor-dense, industrial}`.
 
@@ -151,11 +151,11 @@ dedup:
 - **`PROBE_HIT`**: 60 s cooldown per (MAC, SSID) pair.
 - **`ANOMALY`**: per-event, no dedup (anomalies should be rare).
 - **`DEAUTH_HIT`**: rate-limited by aggregation into per-attacker
-  summaries during floods.
+ summaries during floods.
 - **`HEARTBEAT`**: emits at `HB_INTERVAL` minutes.
 
-Cooldowns are per-node; multiple nodes detecting the same target
-won't be deduplicated automatically across the mesh — the
+Cooldowns are per-node. Multiple nodes detecting the same target
+won't be deduplicated automatically across the mesh. The
 diginode-cc server is expected to dedupe on its side.
 
 ## Implementing a non-Halberd peer
@@ -163,20 +163,20 @@ diginode-cc server is expected to dedupe on its side.
 To talk to Halberd nodes from your own server / sensor:
 
 1. **Stand up a Meshtastic node** on the same channel as the
-   Halberd Heltec sidekicks. Same region, same modem preset, same
-   PSK if the channel is encrypted.
+ Halberd Heltec sidekicks. Same region, same modem preset, same
+ PSK if the channel is encrypted.
 2. **Listen** for `<NODE_ID>: <KIND> ...` text frames. Parse the
-   first colon-pair to extract the originating node ID, then split
-   the rest by whitespace into key=value tokens (or treat each
-   `KIND` as its own grammar — see above).
+ first colon-pair to extract the originating node ID, then split
+ the rest by whitespace into key=value tokens (or treat each
+ `KIND` as its own grammar. See above).
 3. **Send commands** as text frames addressed to the target node's
-   ID. Wait for the matching `<COMMAND>_ACK`.
-4. **Dedupe**. The same hit arriving from multiple nodes is normal;
-   that's how triangulation works. Your server collapses across
-   nodes; each individual node only dedupes against itself.
+ ID. Wait for the matching `<COMMAND>_ACK`.
+4. **Dedupe**. The same hit arriving from multiple nodes is normal.
+ that's how triangulation works. Your server collapses across
+ nodes. Each individual node only dedupes against itself.
 
 The reference parser on the server side lives in
-`karamble/diginode-cc` — the Go backend has the canonical
+`karamble/diginode-cc`. The Go backend has the canonical
 key=value tokeniser and the schema mapping into Postgres.
 
 ## Heartbeat format
@@ -193,9 +193,9 @@ out of range, or its battery is gone.
 
 ## See also
 
-- User handbook: [Mesh command reference](../../user/commands.md)
-  — the same registry from an operator perspective.
-- [REST API reference](../api-rest.md) — the parallel HTTP
-  interface on `halberd-full`.
-- [Adding a mesh command](../extending/new-mesh-command.md) — how
-  to extend this protocol.
+- User handbook: [Mesh command reference](././user/commands.md)
+ . The same registry from an operator perspective.
+- [REST API reference](./api-rest.md). The parallel HTTP
+ interface on `halberd-full`.
+- [Adding a mesh command](./extending/new-mesh-command.md). How
+ to extend this protocol.

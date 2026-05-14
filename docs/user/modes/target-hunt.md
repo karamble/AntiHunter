@@ -1,7 +1,7 @@
 # Target hunt
 
 You have one or more specific MAC addresses or SSIDs you want to
-detect — the classic hunter / "find this device" use case. Target
+detect. The classic hunter / "find this device" use case. Target
 hunt is the right mode when the question is **"is this thing
 nearby?"** and you don't care about everything else.
 
@@ -19,26 +19,26 @@ Not the right mode for:
 
 ## What this page will cover
 
-- Configuring `CONFIG_TARGETS` — MAC syntax, SSID syntax, allowlist
-  vs blocklist semantics.
+- Configuring `CONFIG_TARGETS`. MAC syntax, SSID syntax, allowlist
+ vs blocklist semantics.
 - `SCAN_START:<mode>:<seconds>[:<channels>][:FOREVER]` syntax with
-  every option.
-- Mode 0 / 1 / 2 — Wi-Fi only, BLE only, both — when to pick which.
-- Channel selection: default vs custom; what to do when you suspect
-  the target is on 5 GHz (C5 mirror, v5 only).
+ every option.
+- Mode 0 / 1 / 2. Wi-Fi only, BLE only, both. When to pick which.
+- Channel selection: default vs custom. What to do when you suspect
+ the target is on 5 GHz (C5 mirror, v5 only).
 - Reading hit notifications on the mesh: hit format, RSSI
-  interpretation, dedup window.
+ interpretation, dedup window.
 - Stopping with `STOP` (or letting `FOREVER` run).
 
 ## Worked example
 
-A complete recipe — set targets, start scan, interpret first hits,
-stop — will live here.
+A complete recipe. Set targets, start scan, interpret first hits,
+stop. Will live here.
 
 ## See also
 
-- [Mesh command reference](../commands.md) — full syntax tables.
+- [Mesh command reference](./commands.md). Full syntax tables.
 - [MAC randomization correlation](randomization.md) when the target
-  is randomizing its MAC.
+ is randomizing its MAC.
 - [Triangulation](triangulation.md) when you want a position, not
-  just a presence flag.
+ just a presence flag.

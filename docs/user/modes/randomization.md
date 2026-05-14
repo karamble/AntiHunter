@@ -12,22 +12,22 @@ timing, and SSID fingerprints.
 
 - Long-running surveillance where MAC-only tracking fails.
 - Counting unique people / devices in an area that has MAC-
-  randomizing clients.
+ randomizing clients.
 - Forensics on probe captures where the MACs are LAA-set
-  (locally administered address bit) and obviously randomized.
+ (locally administered address bit) and obviously randomized.
 
 ## What this page will cover
 
 - `RANDOMIZATION_START:<mode>:<seconds>[:FOREVER]` syntax.
 - The IE-order signature: how the order of Information Elements in a
-  probe request becomes a per-device fingerprint that survives MAC
-  rotation.
+ probe request becomes a per-device fingerprint that survives MAC
+ rotation.
 - Channel sequencing: a device probing channels 1 → 6 → 11 in the
-  same order each scan creates a temporal fingerprint.
-- The decision rules for "these N MACs are the same device" —
-  conservative defaults, false-positive risk.
+ same order each scan creates a temporal fingerprint.
+- The decision rules for "these N MACs are the same device".
+ conservative defaults, false-positive risk.
 - Output: a device-identity table where one identity may map to
-  several historic MACs.
+ several historic MACs.
 - Persistence across sessions via the probe DB.
 
 ## Worked example
@@ -38,7 +38,7 @@ the inflated MAC count.
 
 ## See also
 
-- [Probe-request detection](probe-detect.md) — the underlying
-  capture this mode analyses.
+- [Probe-request detection](probe-detect.md). The underlying
+ capture this mode analyses.
 - [Target hunt](target-hunt.md) for hunting *one known* device,
-  vs. this mode's "count unknown devices" framing.
+ vs. this mode's "count unknown devices" framing.

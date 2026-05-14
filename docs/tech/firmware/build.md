@@ -1,7 +1,7 @@
 # Build and flash
 
 Toolchain setup, `Makefile` targets, port wrangling for the S3 and
-C5. The S3 firmwares build with PlatformIO; the C5 firmware builds
+C5. The S3 firmwares build with PlatformIO. The C5 firmware builds
 with ESP-IDF v6.0.1. The `Makefile` hides the difference behind
 parallel targets.
 
@@ -16,7 +16,7 @@ parallel targets.
 | Arduino-ESP32 platform | `espressif32@^6.9.0` | declared in `platformio.ini`, pulled by PIO |
 
 ESP-IDF v6.0.1 is the first stable release with full ESP32-C5
-support — see [decisions](../decisions.md) for the version-pin
+support. See [decisions](./decisions.md) for the version-pin
 rationale.
 
 ## First-time setup
@@ -41,7 +41,7 @@ export PATH="~/.local/share/uv/python/cpython-3.13-linux-x86_64-gnu/bin:$PATH"
 ```
 
 The IDF install creates its own venv at `~/.espressif/python_env/...`
-using whichever `python3` is on PATH at install time; `export.sh`
+using whichever `python3` is on PATH at install time. `export.sh`
 activates that venv directly so the system Python doesn't need to
 change.
 
@@ -74,7 +74,7 @@ The `c5-*` recipes shell out to bash explicitly (`bash -c '. "$(IDF_PATH)/export
 because `idf.py`'s `export.sh` isn't POSIX-sh-compatible. The rest of
 the `Makefile` stays on plain sh.
 
-`IDF_PATH` defaults to `$(HOME)/go/src/github.com/espressif/esp-idf`;
+`IDF_PATH` defaults to `$(HOME)/go/src/github.com/espressif/esp-idf`.
 override on the command line:
 
 ```bash
@@ -103,11 +103,11 @@ make flash-unit         # flash-full + heltec-flash, one-shot
 | Device | Default port | How to tell apart |
 |---|---|---|
 | XIAO ESP32-S3 | `/dev/ttyACM0` | First USB-CDC device plugged in |
-| XIAO ESP32-C5 | `/dev/ttyACM1` | Second one; or use `udevadm info` |
+| XIAO ESP32-C5 | `/dev/ttyACM1` | Second one. Or use `udevadm info` |
 | Heltec V3 | `/dev/ttyUSB0` (CP2102 chip) | Different driver (CP210x), spot via `dmesg \| tail` |
 
-If only the C5 is plugged in (e.g. you're iterating on C5 firmware
-alone), it will enumerate as `/dev/ttyACM0` — override
+If only the C5 is plugged in (e.g. You're iterating on C5 firmware
+alone), it will enumerate as `/dev/ttyACM0`. Override
 `C5_PORT=/dev/ttyACM0` for flash/monitor in that case.
 
 ## Lint
@@ -126,7 +126,7 @@ conventions cleanly.
 
 Lint errors fail the build (`--error-exitcode=1`). Some pre-existing
 warnings exist in the triangulation block and the `cand1`/`cand2`
-ISR helpers — those are tracked separately and don't currently
+ISR helpers. Those are tracked separately and don't currently
 block.
 
 ## Repo branch conventions
@@ -134,9 +134,9 @@ block.
 - `main` is the integration branch.
 - Feature branches use lowercase `feat/...` (e.g. `feat/c5-firmware`).
 - Commit subjects use a lowercase prefix: `c5: ...`,
-  `firmware: ...`, `docs: ...`, `gitignore: ...`.
+ `firmware: ...`, `docs: ...`, `gitignore: ...`.
 - One stage = one commit. Each stage stands on its own with
-  verification.
+ verification.
 
 ## Repository layout (reference)
 
@@ -161,6 +161,6 @@ halberd/
 
 ## See also
 
-- [Layout](layout.md) — what each firmware tree contains.
-- [Variants](variants.md) — `halberd-full` vs `halberd-headless`.
-- [C5 coprocessor](c5-coprocessor.md) — what the C5 firmware does.
+- [Layout](layout.md). What each firmware tree contains.
+- [Variants](variants.md). `halberd-full` vs `halberd-headless`.
+- [C5 coprocessor](c5-coprocessor.md). What the C5 firmware does.
