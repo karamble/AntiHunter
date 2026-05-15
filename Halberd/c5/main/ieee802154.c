@@ -8,10 +8,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "link.h"
 #include "link_protocol.h"
+#include "wifi.h"
 
 static const char *TAG = "ieee802154";
 
@@ -272,6 +274,31 @@ static void ieee_scan_task(void *arg) {
             continue;
         }
 
+        // Serialise against Wi-Fi scan + sniff via the shared radio mutex.
+        // All three contend for the C5's single RF chain; whichever doesn't
+        // hold the mutex surrenders the job rather than blocking.
+        if (xSemaphoreTake(wifi_radio_mutex, 0) != pdTRUE) {
+            struct link_ieee_scan_done done = {0};
+            done.scan_id = req.scan_id;
+            done.status  = LINK_IEEE_STATUS_BUSY;
+            link_send_ieee_scan_done(&done);
+            ESP_LOGW(TAG, "scan id=%" PRIu32 " rejected: radio busy", req.scan_id);
+            continue;
+        }
+
+        // Bring the 802.15.4 radio up just for this scan.
+        esp_err_t enable_err = esp_ieee802154_enable();
+        if (enable_err != ESP_OK) {
+            ESP_LOGE(TAG, "enable: %s", esp_err_to_name(enable_err));
+            xSemaphoreGive(wifi_radio_mutex);
+            struct link_ieee_scan_done done = {0};
+            done.scan_id = req.scan_id;
+            done.status  = LINK_IEEE_STATUS_ERROR;
+            link_send_ieee_scan_done(&done);
+            continue;
+        }
+        esp_ieee802154_set_promiscuous(true);
+
         s_scan_busy = true;
 
         uint32_t dwell = req.duration_ms / req.channel_count;
@@ -293,6 +320,10 @@ static void ieee_scan_task(void *arg) {
         // Drain any straggler frames so the next scan starts clean.
         captured_frame_t drop;
         while (xQueueReceive(s_frame_queue, &drop, 0) == pdTRUE) { /* discard */ }
+
+        // Tear the radio back down so the C5 returns to idle.
+        esp_ieee802154_disable();
+        xSemaphoreGive(wifi_radio_mutex);
 
         struct link_ieee_scan_done done = {0};
         done.scan_id          = req.scan_id;
@@ -327,15 +358,14 @@ static void on_scan_req(const struct link_ieee_scan_req *req) {
 }
 
 void ieee802154_init(void) {
-    esp_err_t err = esp_ieee802154_enable();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "enable: %s", esp_err_to_name(err));
-        return;
-    }
-    // Promiscuous: deliver every frame regardless of address filtering;
-    // matches the sniffer mission.
-    esp_ieee802154_set_promiscuous(true);
-    esp_ieee802154_set_rx_when_idle(true);
+    // Don't enable the 802.15.4 radio at boot. Each scan request brings
+    // it up, sweeps the requested channels, then tears it down. The C5
+    // shares one RF front-end across Wi-Fi, BLE, and 802.15.4 — leaving
+    // the 802.15.4 driver in permanent rx_when_idle starves Wi-Fi 5 GHz
+    // promiscuous RX of air time even when no IEEE scan is "active".
+    // Bench-verified: with permanent IEEE rx_when_idle on, the Wi-Fi
+    // promiscuous callback delivered zero frames on any 5 GHz channel
+    // despite set_channel + band-mode reporting success.
 
     s_req_queue   = xQueueCreate(IEEE_SCAN_QUEUE_LEN,   sizeof(struct link_ieee_scan_req));
     s_frame_queue = xQueueCreate(IEEE_FRAME_QUEUE_LEN,  sizeof(captured_frame_t));
