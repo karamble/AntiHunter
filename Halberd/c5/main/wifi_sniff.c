@@ -44,6 +44,14 @@ static QueueHandle_t s_frame_queue;
 static volatile bool s_sniff_busy;
 static volatile bool s_capture_responses;
 
+// Bench-only diagnostic counters. Bumped from the promiscuous RX callback
+// (ISR-ish context). Reset at the start of every sniff session; printed in
+// the "done" log so we can see what the radio is actually delivering vs.
+// what survives our filters. Investigating "stage 8: zero 5 GHz events".
+static volatile uint32_t s_diag_cb_total;
+static volatile uint32_t s_diag_cb_mgmt;
+static volatile uint32_t s_diag_cb_probe;
+
 static uint32_t now_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
@@ -52,7 +60,10 @@ static uint32_t now_ms(void) {
 // Filters to 802.11 management frames, then to subtype 4 (probe request)
 // or 5 (probe response). The rest get dropped.
 static void probe_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (!s_sniff_busy || type != WIFI_PKT_MGMT || buf == NULL) return;
+    if (!s_sniff_busy || buf == NULL) return;
+    s_diag_cb_total++;
+    if (type != WIFI_PKT_MGMT) return;
+    s_diag_cb_mgmt++;
 
     const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
     const uint8_t *frame = pkt->payload;
@@ -72,6 +83,7 @@ static void probe_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     } else {
         return;
     }
+    s_diag_cb_probe++;
 
     captured_probe_t cap;
     cap.rssi    = pkt->rx_ctrl.rssi;
@@ -147,9 +159,14 @@ static void wifi_sniff_task(void *arg) {
             continue;
         }
 
-        // Serialise against the scan task (wifi.c). Non-blocking grab; if
-        // a scan is in progress we surrender the job and the S3 re-arms.
-        if (xSemaphoreTake(wifi_radio_mutex, 0) != pdTRUE) {
+        // Serialise against the wifi scan + ieee802154 scan tasks via the
+        // shared radio mutex. Wait briefly rather than reject immediately:
+        // the S3's probeDetectionTask fires the IEEE scan and the Wi-Fi
+        // sniff at the same millisecond, and ieee_scan_task has the higher
+        // priority (6 vs 5), so a 0-timeout grab loses every race. IEEE
+        // scans are short (~2.24s for 16 channels at 125ms dwell), so a
+        // 5s wait covers the worst case and lets sniff run right after.
+        if (xSemaphoreTake(wifi_radio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
             struct link_wifi_probe_done done = {0};
             done.scan_id = req.scan_id;
             done.status  = LINK_WIFI_STATUS_BUSY;
@@ -160,11 +177,27 @@ static void wifi_sniff_task(void *arg) {
         }
 
         s_capture_responses = (req.capture_responses != 0);
+        s_diag_cb_total = 0;
+        s_diag_cb_mgmt  = 0;
+        s_diag_cb_probe = 0;
         s_sniff_busy = true;
 
         // Drain any pre-existing junk in the frame queue before arming.
         captured_probe_t drop;
         while (xQueueReceive(s_frame_queue, &drop, 0) == pdTRUE) { }
+
+        // Disable Wi-Fi power save before tuning. PS_NONE keeps the radio
+        // active across the dwell so any captured frames hit our cb
+        // immediately rather than landing after a wake transition.
+        esp_wifi_set_ps(WIFI_PS_NONE);
+
+        // Filter + callback BEFORE set_promiscuous(true): matches the
+        // IDF v6.0.1 official simple_sniffer example. Anything that
+        // briefly arrives in the gap between mode-enable and cb-register
+        // would otherwise hit a null/default callback and be lost.
+        wifi_promiscuous_filter_t flt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+        esp_wifi_set_promiscuous_filter(&flt);
+        esp_wifi_set_promiscuous_rx_cb(probe_rx_cb);
 
         esp_err_t err = esp_wifi_set_promiscuous(true);
         if (err != ESP_OK) {
@@ -177,9 +210,6 @@ static void wifi_sniff_task(void *arg) {
             link_send_wifi_probe_done(&done);
             continue;
         }
-        wifi_promiscuous_filter_t flt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
-        esp_wifi_set_promiscuous_filter(&flt);
-        esp_wifi_set_promiscuous_rx_cb(probe_rx_cb);
 
         uint32_t dwell = req.duration_ms / req.channel_count;
         if (dwell < SNIFF_MIN_DWELL_MS_PER_CH) dwell = SNIFF_MIN_DWELL_MS_PER_CH;
@@ -197,6 +227,21 @@ static void wifi_sniff_task(void *arg) {
             uint8_t ch = req.channels[i];
             if (ch == 0) continue;
             sniff_one_channel(ch, dwell, req.scan_id, &event_count);
+            // After the first valid channel-set, log where the radio
+            // actually landed. One log line per session — confirms the
+            // band switch took effect on real silicon.
+            if (i == 0) {
+                uint8_t prim = 0;
+                wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
+                esp_wifi_get_channel(&prim, &sec);
+                wifi_band_t band = WIFI_BAND_2G;
+                esp_err_t bg = esp_wifi_get_band(&band);
+                ESP_LOGI(TAG, "sniff id=%" PRIu32
+                              " tuned to ch=%u (asked %u) band=%s (get=%s)",
+                         req.scan_id, prim, ch,
+                         band == WIFI_BAND_5G ? "5G" : "2G",
+                         bg == ESP_OK ? "ok" : esp_err_to_name(bg));
+            }
         }
 
         esp_wifi_set_promiscuous(false);
@@ -214,8 +259,10 @@ static void wifi_sniff_task(void *arg) {
         done.status      = LINK_WIFI_STATUS_OK;
         link_send_wifi_probe_done(&done);
 
-        ESP_LOGI(TAG, "sniff id=%" PRIu32 " done events=%u elapsed=%ums",
-                 req.scan_id, event_count, done.duration_ms);
+        ESP_LOGI(TAG, "sniff id=%" PRIu32 " done events=%u elapsed=%ums "
+                      "(cb total=%" PRIu32 " mgmt=%" PRIu32 " probe=%" PRIu32 ")",
+                 req.scan_id, event_count, done.duration_ms,
+                 s_diag_cb_total, s_diag_cb_mgmt, s_diag_cb_probe);
     }
 }
 
