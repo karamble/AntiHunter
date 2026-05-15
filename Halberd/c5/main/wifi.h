@@ -9,12 +9,20 @@
 // 2.4 GHz scan via WiFi.scanNetworks() on the Arduino side. Results stream
 // back as LINK_MSG_WIFI_AP_RESULT, capped by a LINK_MSG_WIFI_SCAN_DONE.
 //
-// wifi_radio_mutex (stage 8) serialises radio access between this module
-// and wifi_sniff.c. Either the scan task or the sniff task may hold it at
-// any time; whichever doesn't gets WIFI_STATUS_BUSY. The mutex is created
-// by wifi_init() before either user starts so wifi_sniff_init() is free
-// to call into it.
+// wifi_radio_mutex is the shared serialisation lock across all four C5
+// radios — wifi scan, wifi probe sniff, BLE scan, and IEEE 802.15.4
+// scan. The C5 has a single RF chain; whichever task holds the mutex
+// owns the radio for the duration of its job. Whoever doesn't hold it
+// either surrenders (BUSY) or waits briefly. Created by wifi_init()
+// before any other *_init runs, so all four can reach in via the
+// extern below.
+//
+// wifi_radio_up/down bring the esp_wifi stack up and tear it down for
+// the lifetime of a single scan or sniff job. Mirror of the S3
+// firmware's radioStartSTA / radioStopSTA. Caller must hold
+// wifi_radio_mutex around the up/down pair.
 
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -25,6 +33,9 @@ extern "C" {
 extern SemaphoreHandle_t wifi_radio_mutex;
 
 void wifi_init(void);
+
+esp_err_t wifi_radio_up(void);
+void      wifi_radio_down(void);
 
 #ifdef __cplusplus
 }

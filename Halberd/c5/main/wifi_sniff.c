@@ -186,6 +186,21 @@ static void wifi_sniff_task(void *arg) {
         captured_probe_t drop;
         while (xQueueReceive(s_frame_queue, &drop, 0) == pdTRUE) { }
 
+        // Bring the Wi-Fi stack up for this session only. Mirrors the
+        // S3's radioStartSTA pattern: between sniff sessions the C5 has
+        // no Wi-Fi loaded at all.
+        esp_err_t up_err = wifi_radio_up();
+        if (up_err != ESP_OK) {
+            ESP_LOGE(TAG, "wifi_radio_up: %s", esp_err_to_name(up_err));
+            s_sniff_busy = false;
+            xSemaphoreGive(wifi_radio_mutex);
+            struct link_wifi_probe_done done = {0};
+            done.scan_id = req.scan_id;
+            done.status  = LINK_WIFI_STATUS_ERROR;
+            link_send_wifi_probe_done(&done);
+            continue;
+        }
+
         // Disable Wi-Fi power save before tuning. PS_NONE keeps the radio
         // active across the dwell so any captured frames hit our cb
         // immediately rather than landing after a wake transition.
@@ -202,6 +217,7 @@ static void wifi_sniff_task(void *arg) {
         esp_err_t err = esp_wifi_set_promiscuous(true);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "set_promiscuous(true): %s", esp_err_to_name(err));
+            wifi_radio_down();
             s_sniff_busy = false;
             xSemaphoreGive(wifi_radio_mutex);
             struct link_wifi_probe_done done = {0};
@@ -245,6 +261,9 @@ static void wifi_sniff_task(void *arg) {
         }
 
         esp_wifi_set_promiscuous(false);
+        // Tear the Wi-Fi stack down so the next radio (BLE / 802.15.4)
+        // takes its turn against a clean slate.
+        wifi_radio_down();
         s_sniff_busy = false;
 
         // One last drain of stragglers so the next sniff starts clean.

@@ -121,6 +121,34 @@ static void scan_one_channel(uint8_t channel, bool passive, uint32_t dwell_ms,
     *out_count += num;
 }
 
+// Bring the Wi-Fi stack up. Caller must hold wifi_radio_mutex. Mirrors the
+// S3 firmware's radioStartSTA pattern: the stack lives in RAM only while an
+// active scan or sniff is in flight; idle time has no Wi-Fi loaded at all.
+esp_err_t wifi_radio_up(void) {
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.sta_disconnected_pm = false;
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) return err;
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) goto fail;
+    // ieee80211d on so the radio honours the country code on DFS bands.
+    err = esp_wifi_set_country_code(HALBERD_C5_WIFI_COUNTRY, true);
+    if (err != ESP_OK) goto fail;
+    err = esp_wifi_start();
+    if (err != ESP_OK) goto fail;
+    return ESP_OK;
+fail:
+    esp_wifi_deinit();
+    return err;
+}
+
+void wifi_radio_down(void) {
+    esp_wifi_stop();
+    esp_wifi_deinit();
+}
+
 static void wifi_scan_task(void *arg) {
     (void)arg;
     struct link_wifi_scan_req req;
@@ -137,15 +165,28 @@ static void wifi_scan_task(void *arg) {
             continue;
         }
 
-        // Serialise with wifi_sniff.c. If the sniff task is using the radio
-        // we surrender this job rather than block — the S3 will re-arm.
-        if (xSemaphoreTake(wifi_radio_mutex, 0) != pdTRUE) {
+        // Serialise with wifi_sniff + ble_scan + ieee802154_scan tasks via
+        // the shared radio mutex. Wait up to 5 s so a short concurrent IEEE
+        // sweep doesn't cause us to surrender; truly stuck radio → BUSY.
+        if (xSemaphoreTake(wifi_radio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
             struct link_wifi_scan_done done = {0};
             done.scan_id = req.scan_id;
             done.status  = LINK_WIFI_STATUS_BUSY;
             link_send_wifi_scan_done(&done);
-            ESP_LOGW(TAG, "scan id=%" PRIu32 " skipped: radio busy (sniff?)",
+            ESP_LOGW(TAG, "scan id=%" PRIu32 " skipped: radio busy",
                      req.scan_id);
+            continue;
+        }
+
+        // Bring the Wi-Fi stack up for this job only.
+        esp_err_t up_err = wifi_radio_up();
+        if (up_err != ESP_OK) {
+            ESP_LOGE(TAG, "wifi_radio_up: %s", esp_err_to_name(up_err));
+            xSemaphoreGive(wifi_radio_mutex);
+            struct link_wifi_scan_done done = {0};
+            done.scan_id = req.scan_id;
+            done.status  = LINK_WIFI_STATUS_ERROR;
+            link_send_wifi_scan_done(&done);
             continue;
         }
 
@@ -164,6 +205,10 @@ static void wifi_scan_task(void *arg) {
             if (ch == 0) continue;
             scan_one_channel(ch, req.passive != 0, dwell, req.scan_id, &ap_count);
         }
+
+        // Tear the Wi-Fi stack down before releasing the mutex so another
+        // radio (BLE / 802.15.4) can take its turn against a clean slate.
+        wifi_radio_down();
 
         struct link_wifi_scan_done done = {0};
         done.scan_id     = req.scan_id;
@@ -202,24 +247,22 @@ void wifi_init(void) {
     }
     ESP_ERROR_CHECK(err);
 
+    // netif + event-loop boilerplate stays at boot — these are lightweight
+    // and don't claim the RF chain. The Wi-Fi stack itself (esp_wifi_init
+    // and friends) only comes up inside wifi_radio_up(), called per scan
+    // job from wifi_scan_task and wifi_sniff_task. Mirrors the S3's
+    // radioStartSTA / radioStopSTA pattern.
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.sta_disconnected_pm = false;
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    // ieee80211d enabled so the radio honours the country code on DFS bands.
-    ESP_ERROR_CHECK(esp_wifi_set_country_code(HALBERD_C5_WIFI_COUNTRY, true));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
     s_req_queue = xQueueCreate(WIFI_SCAN_QUEUE_LEN, sizeof(struct link_wifi_scan_req));
     configASSERT(s_req_queue != NULL);
 
-    // Shared lock for scan + sniff tasks. Must be created before either
-    // task is spawned; wifi_sniff_init() is called by main after we return.
+    // Shared lock across all C5 radios (wifi scan/sniff, ble scan, ieee
+    // 802.15.4 scan). Despite the name it's the C5 radio mutex.
+    // Created here because wifi_init is called first by main(); the other
+    // *_init helpers reach in via the extern in wifi.h.
     wifi_radio_mutex = xSemaphoreCreateMutex();
     configASSERT(wifi_radio_mutex != NULL);
 
@@ -228,5 +271,6 @@ void wifi_init(void) {
     xTaskCreate(wifi_scan_task, "wifi_scan", WIFI_SCAN_TASK_STACK,
                 NULL, WIFI_SCAN_TASK_PRIORITY, NULL);
 
-    ESP_LOGI(TAG, "init country=%s mode=STA scan-only", HALBERD_C5_WIFI_COUNTRY);
+    ESP_LOGI(TAG, "init country=%s queues + task, radio on-demand",
+             HALBERD_C5_WIFI_COUNTRY);
 }
