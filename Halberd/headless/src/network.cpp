@@ -5,6 +5,7 @@
 #include "scanner.h"
 #include "main.h"
 #include <RTClib.h>
+#include <Wire.h>
 #include <algorithm>
 #include <esp_timer.h>
 
@@ -681,6 +682,56 @@ static void handleSetTime(const String &command)
   if (epoch > 1609459200 && setRTCTimeFromEpoch(epoch)) {
     Serial.println("OK: RTC set");
   }
+}
+
+// handleI2cScan probes every 7-bit I²C address on the S3's onboard bus
+// (RTC_SDA / RTC_SCL) and reports the responders. Bench-only diagnostic
+// for verifying the DS3231 + UPS branch on the v5 carrier.
+static void handleI2cScan(const String &command)
+{
+  (void)command;
+  Serial.printf("[I2C] Scan starting on SDA:%d SCL:%d\n", RTC_SDA_PIN, RTC_SCL_PIN);
+
+  bool tookMutex = false;
+  if (rtcMutex != nullptr &&
+      xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+    tookMutex = true;
+  }
+
+  // Re-init at 100 kHz so a heavily-pulled bus or paralleled pulls have the
+  // slack to ACK cleanly. The DS3231 path already begins Wire on boot, but
+  // re-initing is harmless and covers the case where initializeRTC()
+  // returned early before Wire.begin (mutex create failure).
+  Wire.end();
+  delay(20);
+  Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN, 100000);
+  delay(20);
+
+  int found = 0;
+  String foundList;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+      const char *hint = "";
+      if (addr == 0x40) hint = " (INA219 candidate)";
+      else if (addr == 0x68) hint = " (DS3231 candidate)";
+      Serial.printf("[I2C] Found 0x%02X%s\n", addr, hint);
+      if (foundList.length() > 0) foundList += ",";
+      char buf[6];
+      snprintf(buf, sizeof(buf), "0x%02X", addr);
+      foundList += buf;
+      found++;
+    }
+  }
+
+  Serial.printf("[I2C] Scan done: %d device(s)\n", found);
+  String summary = nodeId + ": I2C_SCAN: " +
+                   (found == 0 ? String("empty") : foundList) +
+                   " (" + String(found) + ")";
+  sendToSerial1(summary, true);
+
+  if (tookMutex) xSemaphoreGive(rtcMutex);
 }
 
 static void handleStatus(const String &command)
@@ -1398,6 +1449,7 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command == "PROBE_STOP")                   handleProbeStop(command);
   else if (command.startsWith("STOP"))                handleStop(command);
   else if (command.startsWith("SETTIME:"))            handleSetTime(command);
+  else if (command == "I2C_SCAN")                     handleI2cScan(command);
   else if (command.startsWith("STATUS"))              handleStatus(command);
   else if (command.startsWith("VIBRATION_STATUS"))    handleVibrationStatus(command);
   else if (command == "VIBRATION_ON")                 handleVibrationOn(command);
