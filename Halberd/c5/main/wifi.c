@@ -21,12 +21,13 @@ static const char *TAG = "wifi";
 
 SemaphoreHandle_t wifi_radio_mutex;
 
-// Default country code. "01" enables passive scan on all globally-permitted
-// channels including DFS bands (52-64, 100-144); omits UNII-3 (149-165)
-// which is US/CA/AU-only. Override with a build-time #define if a regional
-// build is needed.
+// Default country code. "US" gives the C5 full UNII-1/2A/2C/3 access for
+// 5 GHz scanning. GhostESP-Revival uses "US" + ieee80211d=true and that's
+// what reliably surfaces 5 GHz APs on the C5 in IDF v6.0.1. Override at
+// build time via -DHALBERD_C5_WIFI_COUNTRY for other regions; if you do,
+// keep the ieee80211d argument below in sync with the regulatory choice.
 #ifndef HALBERD_C5_WIFI_COUNTRY
-#define HALBERD_C5_WIFI_COUNTRY "01"
+#define HALBERD_C5_WIFI_COUNTRY "US"
 #endif
 
 // Per-channel dwell time when the request doesn't specify or specifies a
@@ -133,11 +134,19 @@ esp_err_t wifi_radio_up(void) {
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) goto fail;
-    // ieee80211d on so the radio honours the country code on DFS bands.
+    // ieee80211d=true with country="US": matches GhostESP-Revival's working
+    // pattern on the C5. Country US has explicit UNII-1/2A/2C/3 5 GHz
+    // allowances, and enabling 802.11d lets the radio honour beacon IEs
+    // if any heard (but doesn't gate scanning when the country mask is
+    // already permissive). The on-demand radio still tears down between
+    // scans; what matters for 5 GHz coverage is using the full-band
+    // scan path below.
     err = esp_wifi_set_country_code(HALBERD_C5_WIFI_COUNTRY, true);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_start();
     if (err != ESP_OK) goto fail;
+    // Short post-start settle. Mirror the S3 radioStartSTA(200ms) pattern.
+    vTaskDelay(pdMS_TO_TICKS(200));
     return ESP_OK;
 fail:
     esp_wifi_deinit();
@@ -190,20 +199,44 @@ static void wifi_scan_task(void *arg) {
             continue;
         }
 
-        uint32_t dwell = req.duration_ms / req.channel_count;
-        if (dwell < WIFI_MIN_DWELL_MS_PER_CH) dwell = WIFI_MIN_DWELL_MS_PER_CH;
-        if (dwell > WIFI_MAX_DWELL_MS_PER_CH) dwell = WIFI_MAX_DWELL_MS_PER_CH;
-
         uint32_t start = now_ms();
         uint16_t ap_count = 0;
 
-        ESP_LOGI(TAG, "scan id=%" PRIu32 " ch_count=%u dwell=%" PRIu32 "ms passive=%u",
-                 req.scan_id, req.channel_count, dwell, req.passive);
+        // Full-band single scan (channel=0). The S3-supplied channel list
+        // is ignored — IDF orchestrates the band sweep internally using
+        // the country mask, which is the path that actually surfaces 5
+        // GHz BSSIDs on the C5 (per-channel set_channel + scan_start in
+        // a loop reliably returned aps=0 in IDF v6.0.1). Matches
+        // GhostESP-Revival's working pattern: active scan with 250-300 ms
+        // per-channel dwell, passive fallback for DFS channels.
+        wifi_scan_config_t cfg = {0};
+        cfg.ssid        = NULL;
+        cfg.bssid       = NULL;
+        cfg.channel     = 0;
+        cfg.show_hidden = true;
+        cfg.scan_type   = WIFI_SCAN_TYPE_ACTIVE;
+        cfg.scan_time.active.min = 250;
+        cfg.scan_time.active.max = 300;
+        cfg.scan_time.passive    = 300;
 
-        for (uint8_t i = 0; i < req.channel_count; i++) {
-            uint8_t ch = req.channels[i];
-            if (ch == 0) continue;
-            scan_one_channel(ch, req.passive != 0, dwell, req.scan_id, &ap_count);
+        ESP_LOGI(TAG, "scan id=%" PRIu32 " full-band active(250-300)/passive(300)",
+                 req.scan_id);
+
+        esp_err_t scan_err = esp_wifi_scan_start(&cfg, true);
+        if (scan_err != ESP_OK) {
+            ESP_LOGW(TAG, "scan_start failed: %s", esp_err_to_name(scan_err));
+        } else {
+            uint16_t num = 0;
+            if (esp_wifi_scan_get_ap_num(&num) == ESP_OK && num > 0) {
+                if (num > WIFI_AP_BATCH_CAP) num = WIFI_AP_BATCH_CAP;
+                wifi_ap_record_t recs[WIFI_AP_BATCH_CAP];
+                if (esp_wifi_scan_get_ap_records(&num, recs) == ESP_OK) {
+                    for (uint16_t i = 0; i < num; i++) {
+                        emit_ap(&recs[i], req.scan_id);
+                    }
+                    ap_count = num;
+                }
+            }
         }
 
         // Tear the Wi-Fi stack down before releasing the mutex so another
