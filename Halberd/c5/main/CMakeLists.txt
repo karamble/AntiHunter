@@ -9,6 +9,7 @@ idf_component_register(
          "exp.c"
          "sensors.c"
          "sensors_drv_register_read.c"
+         "sensors_drv_sscma.c"
          "../../shared/link_codec.c"
     INCLUDE_DIRS "."
                  "../../shared"

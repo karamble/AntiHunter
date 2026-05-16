@@ -4,6 +4,18 @@
 
   "sensors": [
     {
+      "_comment": "Seeed Grove Vision AI V2 (WE-2) — SSCMA-protocol camera at fixed I²C addr 0x62. model_id picks which model slot is loaded on the WE-2 (1 is the typical default; check 'AT+MODEL?' if unsure). tscore is the confidence threshold (0-100). emit.cooldown_ms 0 = forward every detection — set higher if the stream is too chatty for mesh.",
+      "name":     "vision",
+      "driver":   "sscma",
+      "bus":      "qwiic",
+      "addr":     ["0x62"],
+      "model_id": 1,
+      "tscore":   60,
+      "poll_ms":  500,
+      "emit":     { "tag": "vision", "cooldown_ms": 0 }
+    },
+
+    {
       "_comment": "Sensirion SHT3x — temperature + humidity, CRC-protected. Strap-selectable address 0x44 (default) or 0x45 (ADDR pin pulled high). Probe is a 'periodic data acquisition with mps=1/s' command (0x2130) — the chip ACKs and begins measuring; first sample available ~15 ms later.",
       "name":   "ambient",
       "driver": "register_read",

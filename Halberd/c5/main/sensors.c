@@ -23,6 +23,18 @@ static const char *TAG = "sensors";
 #define SENSORS_TICK_MS             100      // poller granularity
 #define SENSORS_SLEEP_RETRY_MS      30000    // SD-gate re-probe cadence
 
+// Minimal skeleton dropped on the SD when /sensors.json is missing but
+// the card is mounted. Operator edits this in place to declare sensors.
+// Kept short on purpose — the canonical example with annotated entries
+// lives in docs/examples/sensors.example.json.
+static const char *const SENSORS_SKELETON =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"_note\": \"Halberd external sensor manifest. Add entries to "
+    "\\\"sensors\\\" — see docs/examples/sensors.example.json.\",\n"
+    "  \"sensors\": []\n"
+    "}\n";
+
 // ── Driver registry ────────────────────────────────────────────────────────
 //
 // Each driver-family file exports a `const struct sensor_driver
@@ -32,9 +44,11 @@ static const char *TAG = "sensors";
 // the matcher.
 
 extern const struct sensor_driver sensor_drv_register_read;
+extern const struct sensor_driver sensor_drv_sscma;
 
 static const struct sensor_driver *const s_drivers[] = {
     &sensor_drv_register_read,
+    &sensor_drv_sscma,
     NULL,
 };
 
@@ -283,6 +297,29 @@ static void transition(enum sensor_state next) {
     s_last_retry_ms = now_ms();
 }
 
+// First-boot ergonomics: if /sensors.json is missing on a mounted SD,
+// drop a minimal skeleton so the operator has a file to edit instead
+// of needing to know the schema cold. Best-effort — failure just leaves
+// us in SLEEPING. Triggered only on the NOT_FOUND path; once the
+// skeleton exists, subsequent attempt_load() calls parse it (and find
+// 0 slots, transitioning to SLEEPING with a different log line).
+static void try_drop_skeleton(void) {
+    const size_t len = strlen(SENSORS_SKELETON);
+    uint32_t bytes_written = 0;
+    uint8_t  status = 0;
+    int rc = link_sd_write(SENSORS_MANIFEST_PATH, 0,
+                           (const uint8_t *)SENSORS_SKELETON, (uint16_t)len,
+                           LINK_SD_WRITE_FLAG_CREATE_TRUNCATE |
+                               LINK_SD_WRITE_FLAG_FINAL_CHUNK,
+                           &bytes_written, &status);
+    if (rc == 0 && status == LINK_SD_STATUS_OK) {
+        ESP_LOGI(TAG, "dropped skeleton " SENSORS_MANIFEST_PATH " (%u bytes) — "
+                      "edit it to declare sensors", (unsigned)bytes_written);
+    } else {
+        ESP_LOGW(TAG, "skeleton write failed rc=%d status=%u", rc, status);
+    }
+}
+
 // Attempt full manifest load + slot population. Returns the resulting
 // state to enter. ACTIVE on success (≥1 slot claimed), SLEEPING on
 // missing-file / no-SD, ERROR on parse / IO failure with a present file.
@@ -295,7 +332,8 @@ static enum sensor_state attempt_load(void) {
             ESP_LOGI(TAG, "no SD card → SLEEPING");
             return SENSOR_STATE_SLEEPING;
         case LINK_SD_STATUS_NOT_FOUND:
-            ESP_LOGI(TAG, "no " SENSORS_MANIFEST_PATH " → SLEEPING");
+            ESP_LOGI(TAG, "no " SENSORS_MANIFEST_PATH " → dropping skeleton");
+            try_drop_skeleton();
             return SENSOR_STATE_SLEEPING;
         case LINK_SD_STATUS_BAD_PARAM:
             ESP_LOGW(TAG, "manifest oversize → ERROR");
