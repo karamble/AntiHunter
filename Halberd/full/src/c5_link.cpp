@@ -189,8 +189,9 @@ bool sd_path_allowed(const char *path, uint8_t plen) {
             return false;
         }
     }
-    // Exact match for the manifest.
-    if (plen == 14 && memcmp(path, "/sensors.json", 13) == 0 && path[13] != '/') {
+    // Exact match for the manifest. /sensors.json is 13 bytes; plen
+    // carries the wire length without NUL.
+    if (plen == 13 && memcmp(path, "/sensors.json", 13) == 0) {
         return true;
     }
     auto starts_with = [&](const char *prefix, uint8_t prefix_len) -> bool {

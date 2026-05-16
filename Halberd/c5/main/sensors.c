@@ -25,15 +25,12 @@ static const char *TAG = "sensors";
 
 // Minimal skeleton dropped on the SD when /sensors.json is missing but
 // the card is mounted. Operator edits this in place to declare sensors.
-// Kept short on purpose — the canonical example with annotated entries
-// lives in docs/examples/sensors.example.json.
+// Must fit in a single LINK_SD_DATA_MAX (128 B) chunk; the canonical
+// annotated example lives in docs/examples/sensors.example.json.
 static const char *const SENSORS_SKELETON =
-    "{\n"
-    "  \"version\": 1,\n"
-    "  \"_note\": \"Halberd external sensor manifest. Add entries to "
-    "\\\"sensors\\\" — see docs/examples/sensors.example.json.\",\n"
-    "  \"sensors\": []\n"
-    "}\n";
+    "{\"version\":1,"
+    "\"_doc\":\"see docs/examples/sensors.example.json\","
+    "\"sensors\":[]}\n";
 
 // ── Driver registry ────────────────────────────────────────────────────────
 //
@@ -337,6 +334,11 @@ static enum sensor_state attempt_load(void) {
             return SENSOR_STATE_SLEEPING;
         case LINK_SD_STATUS_BAD_PARAM:
             ESP_LOGW(TAG, "manifest oversize → ERROR");
+            return SENSOR_STATE_ERROR;
+        case LINK_SD_STATUS_DENIED:
+            // Indicates a C5/S3 path-whitelist mismatch — code bug, not
+            // recoverable at runtime. Park in ERROR so the operator sees it.
+            ESP_LOGE(TAG, "manifest path rejected by S3 whitelist → ERROR");
             return SENSOR_STATE_ERROR;
         default:
             ESP_LOGW(TAG, "manifest fetch failed (status=%u) → SLEEPING", status);

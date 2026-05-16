@@ -174,7 +174,8 @@ bool sd_path_allowed(const char *path, uint8_t plen) {
     for (uint8_t i = 0; i + 1 < plen; i++) {
         if (path[i] == '.' && path[i + 1] == '.') return false;
     }
-    if (plen == 14 && memcmp(path, "/sensors.json", 13) == 0 && path[13] != '/') {
+    // /sensors.json is 13 bytes; plen carries the wire length without NUL.
+    if (plen == 13 && memcmp(path, "/sensors.json", 13) == 0) {
         return true;
     }
     auto starts_with = [&](const char *prefix, uint8_t prefix_len) -> bool {
