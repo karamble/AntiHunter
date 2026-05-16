@@ -145,6 +145,13 @@ esp_err_t wifi_radio_up(void) {
     if (err != ESP_OK) goto fail;
     err = esp_wifi_start();
     if (err != ESP_OK) goto fail;
+    // Enable the full PHY-mode set on the STA interface so the C5
+    // can RX legacy + HT + HE frames. Defaults vary by IDF version
+    // and may miss HE on the C5; explicit is safer for promiscuous
+    // and scan paths.
+    esp_wifi_set_protocol(WIFI_IF_STA,
+                          WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G |
+                          WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
     // Short post-start settle. Mirror the S3 radioStartSTA(200ms) pattern.
     vTaskDelay(pdMS_TO_TICKS(200));
     return ESP_OK;

@@ -227,37 +227,40 @@ static void wifi_sniff_task(void *arg) {
             continue;
         }
 
-        uint32_t dwell = req.duration_ms / req.channel_count;
-        if (dwell < SNIFF_MIN_DWELL_MS_PER_CH) dwell = SNIFF_MIN_DWELL_MS_PER_CH;
-        if (dwell > SNIFF_MAX_DWELL_MS_PER_CH) dwell = SNIFF_MAX_DWELL_MS_PER_CH;
-
         uint32_t start = now_ms();
         uint16_t event_count = 0;
 
-        ESP_LOGI(TAG, "sniff id=%" PRIu32 " ch_count=%u dwell=%" PRIu32
-                      "ms cap_resp=%u",
-                 req.scan_id, req.channel_count, dwell,
-                 (unsigned)req.capture_responses);
+        ESP_LOGI(TAG, "sniff id=%" PRIu32 " scan-driven full-band cap_resp=%u",
+                 req.scan_id, (unsigned)req.capture_responses);
 
-        for (uint8_t i = 0; i < req.channel_count; i++) {
-            uint8_t ch = req.channels[i];
-            if (ch == 0) continue;
-            sniff_one_channel(ch, dwell, req.scan_id, &event_count);
-            // After the first valid channel-set, log where the radio
-            // actually landed. One log line per session — confirms the
-            // band switch took effect on real silicon.
-            if (i == 0) {
-                uint8_t prim = 0;
-                wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
-                esp_wifi_get_channel(&prim, &sec);
-                wifi_band_t band = WIFI_BAND_2G;
-                esp_err_t bg = esp_wifi_get_band(&band);
-                ESP_LOGI(TAG, "sniff id=%" PRIu32
-                              " tuned to ch=%u (asked %u) band=%s (get=%s)",
-                         req.scan_id, prim, ch,
-                         band == WIFI_BAND_5G ? "5G" : "2G",
-                         bg == ESP_OK ? "ok" : esp_err_to_name(bg));
-            }
+        // Scan-driven channel hop: let esp_wifi_scan_start orchestrate
+        // the channel sweep instead of our own set_channel loop. The
+        // per-channel approach reliably returned cb total=0 on the C5
+        // (IDF v6.0.1) even though every setup checkbox passed. The
+        // theory: the IDF's internal scan engine activates RX in a way
+        // that bare set_channel + dwell doesn't, and promiscuous-mode
+        // frames arrive via the cb during the scan's active phase.
+        // Mirror of the working stage-4 pattern in wifi.c.
+        wifi_scan_config_t scan_cfg = {0};
+        scan_cfg.ssid        = NULL;
+        scan_cfg.bssid       = NULL;
+        scan_cfg.channel     = 0;
+        scan_cfg.show_hidden = true;
+        scan_cfg.scan_type   = WIFI_SCAN_TYPE_ACTIVE;
+        scan_cfg.scan_time.active.min = 250;
+        scan_cfg.scan_time.active.max = 300;
+        scan_cfg.scan_time.passive    = 300;
+
+        esp_err_t scan_err = esp_wifi_scan_start(&scan_cfg, true);
+        if (scan_err != ESP_OK) {
+            ESP_LOGW(TAG, "scan_start failed: %s", esp_err_to_name(scan_err));
+        }
+
+        // Drain whatever the cb queued during the scan window.
+        captured_probe_t cap;
+        while (xQueueReceive(s_frame_queue, &cap, 0) == pdTRUE) {
+            emit_event(&cap, req.scan_id);
+            event_count++;
         }
 
         esp_wifi_set_promiscuous(false);
