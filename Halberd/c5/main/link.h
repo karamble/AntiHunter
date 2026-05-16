@@ -92,6 +92,39 @@ void link_register_i2c_read_req(link_i2c_read_req_cb cb);
 void link_register_i2c_write_req(link_i2c_write_req_cb cb);
 void link_register_gpio_req(link_gpio_req_cb cb);
 
+// External sensor framework (stage 9). The C5 hosts the driver runtime
+// and pushes a SENSOR_EVENT to the S3 once per emit. Caller owns the
+// struct; this function copies the bytes.
+struct link_sensor_event;
+void link_send_sensor_event(const struct link_sensor_event *ev);
+
+// SD-card proxy (stage 9). The SD slot lives on the S3 but the sensor
+// driver runtime needs file-IO for the manifest fetch and optional
+// event-log / capture writes. These three helpers are blocking calls
+// from C5-side code (driver tasks); the link RX task delivers the
+// matching RESP frame and signals the waiting caller via a semaphore.
+//
+// Returns 0 on success (out_* fields populated from the S3's reply),
+// negative on protocol error or timeout. Callers serialise themselves
+// via the mutex held internally — one outstanding SD op per direction
+// system-wide, same shape as the S3-side I²C bridge.
+int link_sd_read(const char *path, uint32_t offset,
+                 uint8_t *out_buf, uint16_t buf_cap,
+                 uint16_t *out_len, uint8_t *out_eof,
+                 uint8_t *out_status);
+
+int link_sd_write(const char *path, uint32_t offset,
+                  const uint8_t *data, uint16_t data_len,
+                  uint8_t flags,
+                  uint32_t *out_bytes_written,
+                  uint8_t *out_status);
+
+int link_sd_stat(const char *path,
+                 uint32_t *out_size_bytes,
+                 uint32_t *out_mtime_unix,
+                 uint8_t *out_is_dir,
+                 uint8_t *out_status);
+
 #ifdef __cplusplus
 }
 #endif

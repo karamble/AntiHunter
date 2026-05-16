@@ -194,6 +194,19 @@ int c5LinkGpioWrite(uint8_t pin_index, bool value, uint32_t timeout_ms);
 // Read the input level. On success, *out_value is 0 or 1.
 int c5LinkGpioRead(uint8_t pin_index, uint8_t *out_value, uint32_t timeout_ms);
 
+// ── External sensor framework (stage 9) ───────────────────────────────────
+//
+// The C5 hosts a manifest-driven driver runtime for external sensors on
+// J_EXP / J_QWIIC and pushes a SENSOR_EVENT frame per emission. The S3
+// receives each frame in the link RX task and dispatches to a callback
+// installed by scanner.cpp, which formats the event as a mesh line
+// `<NODE_ID>: <tag> k=v ...` and forwards it via the existing mesh-emit
+// path with a per-event cooldown.
+
+struct link_sensor_event;  // full type lives in link_protocol.h
+typedef void (*c5LinkSensorEventCb)(const struct link_sensor_event *ev);
+void c5LinkRegisterSensorEventCallback(c5LinkSensorEventCb cb);
+
 #ifdef __cplusplus
 }
 #endif
