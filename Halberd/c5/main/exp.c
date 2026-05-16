@@ -212,16 +212,25 @@ static void on_gpio_req(const struct link_gpio_req *req) {
 }
 
 void exp_init(void) {
-    // v5 carrier has no on-board I²C pull-ups — relies on the
-    // plugged-in Qwiic module's own pulls (see hardware.h comment
-    // and feedback_c5_i2c_pullups memory). Internal pulls stay off.
+    // v5 carrier has no on-board I²C pull-ups. Most SparkFun Qwiic
+    // modules supply their own ~4.7 kΩ pulls and the bus comes up
+    // fine when one is plugged in. But two real bench cases need
+    // the C5's own internal pulls as a fallback:
+    //   1. J_EXP raw-wire setups with a slave that doesn't carry
+    //      pulls (Grove-ecosystem Vision AI V2 with no host MCU).
+    //   2. Grove carrier with its host MCU (C3) pulled — the C3 was
+    //      silently providing the bus pulls and removing it leaves
+    //      the bus floating.
+    // The ESP32-C5 internal pulls are weak (~45 kΩ) but adequate at
+    // 100 kHz; when external ~4.7 kΩ pulls are also present they
+    // parallel to ~4.3 kΩ, well inside the I²C spec envelope.
     i2c_master_bus_config_t cfg = {0};
     cfg.i2c_port = EXP_I2C_PORT;
     cfg.sda_io_num = HALBERD_C5_EXP_SDA_GPIO;
     cfg.scl_io_num = HALBERD_C5_EXP_SCL_GPIO;
     cfg.clk_source = I2C_CLK_SRC_DEFAULT;
     cfg.glitch_ignore_cnt = 7;
-    cfg.flags.enable_internal_pullup = false;
+    cfg.flags.enable_internal_pullup = true;
 
     esp_err_t err = i2c_new_master_bus(&cfg, &s_i2c_bus);
     if (err != ESP_OK) {
@@ -258,6 +267,29 @@ bool exp_i2c_addr_present(uint8_t addr) {
 
 void exp_i2c_rescan(void) {
     if (!s_i2c_ready) return;
+
+    // One-shot SDA/SCL idle-level diagnostic before the scan. Logs
+    // whether the bus is electrically free. If either reads 0,
+    // probes will time out — likely cause is no pull-ups in the
+    // circuit, slave holding the line, or a wiring short.
+    {
+        const gpio_num_t sda = HALBERD_C5_EXP_SDA_GPIO;
+        const gpio_num_t scl = HALBERD_C5_EXP_SCL_GPIO;
+        gpio_config_t io = {0};
+        io.intr_type    = GPIO_INTR_DISABLE;
+        io.mode         = GPIO_MODE_INPUT;
+        io.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
+        io.pull_up_en   = GPIO_PULLUP_ENABLE;
+        io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_config(&io);
+        // Brief settling time for the weak ~45 kΩ pulls to charge
+        // the bus capacitance.
+        for (volatile int spin = 0; spin < 10000; spin++) { }
+        int sda_lvl = gpio_get_level(sda);
+        int scl_lvl = gpio_get_level(scl);
+        ESP_LOGI(TAG, "i2c idle: SDA=%d SCL=%d", sda_lvl, scl_lvl);
+    }
+
     memset(s_i2c_present, 0, sizeof(s_i2c_present));
     int found = 0;
     ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");

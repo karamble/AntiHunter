@@ -109,10 +109,19 @@ static esp_err_t sscma_send_at(uint8_t addr, const char *cmd) {
 }
 
 // Query how many bytes the camera has queued. Returns ESP_OK + *out_len.
+//
+// Seeed's reference driver does this as TWO separate transactions —
+// write the 6-byte header (transmit, implicit STOP), brief wait, then
+// a separate read (transmit_receive's repeated-START is NOT what the
+// WE-2 expects; the AVAILABLE poll otherwise comes back as a bus
+// error). The wait between matches Seeed's `wait_delay` parameter.
 static esp_err_t sscma_available(uint8_t addr, uint16_t *out_len) {
     static const uint8_t hdr[6] = { FEATURE_TRANSPORT, FT_CMD_AVAILABLE, 0, 0, 0xFF, 0xFF };
+    esp_err_t err = exp_i2c_xfer(addr, hdr, sizeof(hdr), NULL, 0);
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(2));
     uint8_t reply[2] = {0};
-    esp_err_t err = exp_i2c_xfer(addr, hdr, sizeof(hdr), reply, sizeof(reply));
+    err = exp_i2c_xfer(addr, NULL, 0, reply, sizeof(reply));
     if (err != ESP_OK) return err;
     *out_len = ((uint16_t)reply[0] << 8) | reply[1];
     return ESP_OK;
