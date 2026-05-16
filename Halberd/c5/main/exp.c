@@ -307,6 +307,23 @@ void exp_i2c_rescan(void) {
     ESP_LOGI(TAG, "i2c idle after recovery: SDA=%d SCL=%d (both 1 = bus free)",
              sda_lvl, scl_lvl);
 
+    // Bail early if a line is still held low — the scan would just
+    // produce 5+ seconds of timeouts on every address and we'd loop
+    // back here every 30 s with no useful change. The cause is
+    // physical (wiring short to GND, broken slave, etc.) and needs
+    // operator attention. Clear an empty bitmap so subsequent
+    // exp_i2c_addr_present() calls return false consistently.
+    if (sda_lvl == 0 || scl_lvl == 0) {
+        ESP_LOGE(TAG, "i2c bus held low (SDA=%d SCL=%d) — skipping scan. "
+                      "Check wiring: SCL should reach GPIO%d (silk D4), "
+                      "SDA should reach GPIO%d (silk D3), neither tied "
+                      "to GND.",
+                 sda_lvl, scl_lvl,
+                 HALBERD_C5_EXP_SCL_GPIO, HALBERD_C5_EXP_SDA_GPIO);
+        memset(s_i2c_present, 0, sizeof(s_i2c_present));
+        return;
+    }
+
     // Hand the pins back to the I²C peripheral by re-attaching them
     // to the master bus via the IDF setpins API. With current IDF the
     // simpler path is just to let the next add_device + transmit
