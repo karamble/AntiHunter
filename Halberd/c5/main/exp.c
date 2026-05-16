@@ -240,16 +240,15 @@ void exp_init(void) {
     // Boot-time I²C bus scan. Probes every 7-bit address and reports
     // responders. Logs to the C5's USB Serial/JTAG console so an
     // operator can see what's plugged into J_EXP / J_QWIIC without
-    // any S3 involvement. Bench-only diagnostic during stage 7
-    // bring-up; harmless to leave in (one log line of output, ~3 s).
+    // any S3 involvement.
     if (s_i2c_ready) {
         int found = 0;
         ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
         for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-            esp_err_t probe = i2c_master_probe(s_i2c_bus, addr, 50);
-            if (probe == ESP_OK) {
+            if (i2c_master_probe(s_i2c_bus, addr, 50) == ESP_OK) {
                 const char *hint = "";
-                if (addr == 0x62) hint = " (Grove Vision AI V2 candidate)";
+                if (addr == 0x62) hint = " (Grove Vision AI V2 / WE-2)";
+                else if (addr == 0x28) hint = " (Grove Vision AI camera sensor?)";
                 ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
                 found++;
             }
