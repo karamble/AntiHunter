@@ -1,6 +1,7 @@
 #include "hardware.h"
 #include "c5_link.h"
 #include "network.h"
+#include "scanner.h"
 #include "baseline.h"
 #include "triangulation.h"
 #include <Arduino.h>
@@ -48,6 +49,13 @@ bool rtcSynced = false;
 time_t lastRTCSync = 0;
 SemaphoreHandle_t rtcMutex = nullptr;
 String rtcTimeString = "RTC not initialized";
+
+// INA219 (Waveshare UPS Module 3S, shared bus with RTC — see hardware.h)
+bool  inaAvailable     = false;
+float inaLastVoltage   = 0.0f;
+float inaLastCurrentMa = 0.0f;
+float inaLastPct       = 0.0f;
+bool  inaLastCharging  = false;
 
 // Vibration Sensor
 volatile bool vibrationDetected = false;
@@ -1008,7 +1016,18 @@ String getDiagnostics() {
     } else {
         s += "Not available\n";
     }
-    
+
+    s += "Battery (UPS): ";
+    if (inaAvailable) {
+        readINA219();
+        s += String(inaLastVoltage, 2) + " V, " +
+             String(inaLastCurrentMa, 0) + " mA, " +
+             String((int)inaLastPct) + "%, " +
+             (inaLastCharging ? "charging\n" : "discharging\n");
+    } else {
+        s += "Not available\n";
+    }
+
     s += "Drone Detection: " + String(droneDetectionEnabled ? "Active" : "Inactive") + "\n";
     if (droneDetectionEnabled) {
         s += "Drones detected: " + String(droneDetectionCount) + "\n";
@@ -1067,6 +1086,9 @@ void initializeGPS() {
 
     gpsMutex = xSemaphoreCreateMutex();
     c5LinkInit();
+    // Install the SENSOR_EVENT callback so external-sensor frames the C5
+    // pushes after manifest load flow into the existing mesh-emit path.
+    c5LinkRegisterSensorEventCallback(onSensorEventFromLink);
 
     delay(500);
 
@@ -1083,7 +1105,13 @@ void sendStartupStatus() {
     String startupMsg = getNodeId() + ": STARTUP: System initialized";
     startupMsg += " GPS:";
     startupMsg += (gpsValid ? "LOCKED " : "SEARCHING ");
-    startupMsg += "TEMP: " + String(temp_c, 1) + "C / " + String(temp_f, 1) + "F\n";
+    startupMsg += "TEMP: " + String(temp_c, 1) + "C / " + String(temp_f, 1) + "F";
+    // First boot-time UPS reading. Skipped silently when no UPS is plugged
+    // into J_UPS so the line stays clean on bare-S3 deployments.
+    if (inaAvailable && readINA219()) {
+        startupMsg += " Bat:" + getBatteryStatusString();
+    }
+    startupMsg += "\n";
     // startupMsg += " SD:";
     // startupMsg += (sdAvailable ? "OK" : "FAIL");
     // startupMsg += " Status:ONLINE";
@@ -1430,6 +1458,126 @@ void initializeRTC() {
     }
     
     rtc.disable32K();
+}
+
+// ── INA219 (Waveshare UPS Module 3S) ──────────────────────────────────────
+//
+// Mirrors gotailme's known-good reader (internal/battery/{ina219.go,
+// monitor.go}). Raw register reads — no Adafruit_INA219 dependency, the
+// Wire calls below are ~20 lines of code total.
+//
+// Quirks ported verbatim from gotailme:
+//   - Re-write the calibration register before every measurement read
+//     (some drift workaround documented in the Waveshare reference code).
+//   - Read bus voltage twice and use the second value (also from the
+//     Waveshare reference Python).
+// All bus access takes rtcMutex because the DS3231 sits on the same wire.
+
+static const uint16_t INA_REG_CONFIG      = 0x00;
+static const uint16_t INA_REG_BUS_VOLTAGE = 0x02;
+static const uint16_t INA_REG_POWER       = 0x03;
+static const uint16_t INA_REG_CURRENT     = 0x04;
+static const uint16_t INA_REG_CALIBRATION = 0x05;
+
+// Config: 16V bus range, /2 gain, 12-bit BADC + SADC, continuous shunt+bus.
+// Matches gotailme/internal/battery/ina219.go:29.
+static const uint16_t INA_CONFIG_VALUE = (0x00 << 13) | (0x01 << 11) |
+                                         (0x0D << 7)  | (0x0D << 3) | 0x07;
+// Calibration tuned for the UPS-3S's 0.1 Ω shunt at 5 A max.
+// Matches gotailme/internal/battery/ina219.go:24.
+static const uint16_t INA_CAL_VALUE         = 26868;
+static const float    INA_CURRENT_LSB_MA    = 0.1524f;
+static const float    INA_BUS_VOLTAGE_LSB_V = 0.004f;
+
+// 3S Li-ion pack thresholds (Waveshare UPS-3S = 3× 18650 in series).
+// Matches gotailme/internal/battery/monitor.go:10-11.
+static const float BAT_V_EMPTY = 9.0f;   // 3.0 V/cell — fully discharged
+static const float BAT_V_FULL  = 12.6f;  // 4.2 V/cell — fully charged
+
+static bool ina_write_u16(uint8_t reg, uint16_t value) {
+    Wire.beginTransmission(INA219_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write((uint8_t)(value >> 8));
+    Wire.write((uint8_t)(value & 0xFF));
+    return Wire.endTransmission() == 0;
+}
+
+static bool ina_read_u16(uint8_t reg, uint16_t *out) {
+    if (!out) return false;
+    Wire.beginTransmission(INA219_I2C_ADDR);
+    Wire.write(reg);
+    // Repeated start (endTransmission(false)) — INA219 expects the read
+    // back-to-back with the register pointer write.
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((uint8_t)INA219_I2C_ADDR, (uint8_t)2) != 2) return false;
+    uint8_t hi = Wire.read();
+    uint8_t lo = Wire.read();
+    *out = ((uint16_t)hi << 8) | lo;
+    return true;
+}
+
+void initializeINA219() {
+    Serial.println("Initializing INA219 (UPS Module 3S)...");
+    inaAvailable = false;
+    // initializeRTC() already ran Wire.begin and created rtcMutex. Reuse both.
+    if (rtcMutex == nullptr) {
+        Serial.println("[INA219] rtcMutex missing — bus init never happened, skipping");
+        return;
+    }
+    if (xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        Serial.println("[INA219] rtcMutex busy — INA219 init deferred");
+        return;
+    }
+    bool ok = ina_write_u16(INA_REG_CONFIG,      INA_CONFIG_VALUE) &&
+              ina_write_u16(INA_REG_CALIBRATION, INA_CAL_VALUE);
+    xSemaphoreGive(rtcMutex);
+    if (!ok) {
+        Serial.printf("[INA219] No ACK at 0x%02X — UPS not plugged into J_UPS?\n",
+                      INA219_I2C_ADDR);
+        return;
+    }
+    inaAvailable = true;
+    Serial.printf("[INA219] Ready at 0x%02X (3S Li-ion, %.1fV..%.1fV range)\n",
+                  INA219_I2C_ADDR, BAT_V_EMPTY, BAT_V_FULL);
+}
+
+bool readINA219() {
+    if (!inaAvailable || rtcMutex == nullptr) return false;
+    if (xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+
+    bool ok = true;
+    uint16_t raw = 0;
+
+    ok &= ina_write_u16(INA_REG_CALIBRATION, INA_CAL_VALUE);
+    ok &= ina_read_u16(INA_REG_BUS_VOLTAGE, &raw);
+    ok &= ina_read_u16(INA_REG_BUS_VOLTAGE, &raw);
+    float volts = (raw >> 3) * INA_BUS_VOLTAGE_LSB_V;
+
+    ok &= ina_write_u16(INA_REG_CALIBRATION, INA_CAL_VALUE);
+    ok &= ina_read_u16(INA_REG_CURRENT, &raw);
+    float current_ma = (int16_t)raw * INA_CURRENT_LSB_MA;
+
+    xSemaphoreGive(rtcMutex);
+
+    if (!ok) return false;
+
+    float pct = (volts - BAT_V_EMPTY) / (BAT_V_FULL - BAT_V_EMPTY) * 100.0f;
+    if (pct < 0.0f)   pct = 0.0f;
+    if (pct > 100.0f) pct = 100.0f;
+
+    inaLastVoltage   = volts;
+    inaLastCurrentMa = current_ma;
+    inaLastPct       = pct;
+    inaLastCharging  = (current_ma > 0.0f);
+    return true;
+}
+
+String getBatteryStatusString() {
+    if (!inaAvailable) return String("--");
+    String s = String(inaLastVoltage, 2) + "V " +
+               String((int)inaLastPct) + "% " +
+               (inaLastCharging ? "CHG" : "DIS");
+    return s;
 }
 
 bool setRTCTimeFromEpoch(time_t epoch) {
@@ -1948,7 +2096,15 @@ void sendBatterySaverHeartbeat() {
         heartbeat += " GPS:N/A";
     }
 
-    heartbeat += " Battery:SAVER";
+    // Refresh + append live battery reading when the UPS is present.
+    // The SAVER tag is retained so the operator can still tell this came
+    // from the battery-saver path (vs the regular STATUS handler).
+    if (inaAvailable) {
+        readINA219();
+        heartbeat += " Bat:" + getBatteryStatusString() + " SAVER";
+    } else {
+        heartbeat += " Battery:SAVER";
+    }
 
     sendToSerial1(heartbeat, true);
     Serial.printf("[BATTERY_SAVER] Heartbeat sent: %s\n", heartbeat.c_str());

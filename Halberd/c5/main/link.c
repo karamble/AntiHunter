@@ -159,6 +159,209 @@ void link_send_gpio_resp(const struct link_gpio_resp *resp) {
                (const uint8_t *)resp, sizeof(*resp));
 }
 
+void link_send_sensor_event(const struct link_sensor_event *ev) {
+    if (!ev) return;
+    send_frame(LINK_MSG_SENSOR_EVENT, s_seq++,
+               (const uint8_t *)ev, sizeof(*ev));
+}
+
+// ── SD-proxy client (C5 → S3 requests) ─────────────────────────────────────
+//
+// Mirror of the S3-side I²C bridge in the opposite direction: one
+// outstanding SD op at a time, request_id correlation, blocking caller
+// woken by the link RX task when the matching RESP arrives.
+//
+// Timeout matches the worst-case SD-card stall the FatFs driver tolerates
+// before its own retry path kicks in — 2 s is generous for a healthy card
+// and avoids stranding a driver task on a card that has gone away.
+
+#define LINK_SD_REQUEST_TIMEOUT_MS 2000
+
+static SemaphoreHandle_t       s_sd_mutex;
+static SemaphoreHandle_t       s_sd_resp_sem;
+static uint32_t                s_sd_pending_id;
+static uint8_t                 s_sd_pending_type;   // expected RESP type, 0 = no op pending
+static struct link_sd_read_resp  s_sd_read_resp_slot;
+static struct link_sd_write_resp s_sd_write_resp_slot;
+static struct link_sd_stat_resp  s_sd_stat_resp_slot;
+static uint32_t                s_sd_next_request_id = 1;
+
+static void sd_init_locked_state(void) {
+    if (s_sd_mutex == NULL) {
+        s_sd_mutex    = xSemaphoreCreateMutex();
+        s_sd_resp_sem = xSemaphoreCreateBinary();
+    }
+}
+
+// Called from on_frame() under the link RX task when a SD_*_RESP frame
+// arrives. Routes the bytes into the matching slot and wakes the caller.
+// Stale responses (no pending op, or wrong request_id) are dropped.
+static void sd_deliver_response(uint8_t type, const uint8_t *payload, size_t len) {
+    if (s_sd_pending_type != type) {
+        ESP_LOGW(TAG, "SD resp type=0x%02x dropped (pending=0x%02x)",
+                 type, s_sd_pending_type);
+        return;
+    }
+    switch (type) {
+    case LINK_MSG_SD_READ_RESP:
+        if (len != sizeof(s_sd_read_resp_slot)) goto bad_len;
+        memcpy(&s_sd_read_resp_slot, payload, sizeof(s_sd_read_resp_slot));
+        if (s_sd_read_resp_slot.request_id != s_sd_pending_id) goto bad_id;
+        break;
+    case LINK_MSG_SD_WRITE_RESP:
+        if (len != sizeof(s_sd_write_resp_slot)) goto bad_len;
+        memcpy(&s_sd_write_resp_slot, payload, sizeof(s_sd_write_resp_slot));
+        if (s_sd_write_resp_slot.request_id != s_sd_pending_id) goto bad_id;
+        break;
+    case LINK_MSG_SD_STAT_RESP:
+        if (len != sizeof(s_sd_stat_resp_slot)) goto bad_len;
+        memcpy(&s_sd_stat_resp_slot, payload, sizeof(s_sd_stat_resp_slot));
+        if (s_sd_stat_resp_slot.request_id != s_sd_pending_id) goto bad_id;
+        break;
+    default:
+        return;
+    }
+    xSemaphoreGive(s_sd_resp_sem);
+    return;
+bad_len:
+    ESP_LOGW(TAG, "SD resp type=0x%02x bad len=%u", type, (unsigned)len);
+    return;
+bad_id:
+    ESP_LOGW(TAG, "SD resp type=0x%02x stale id, dropping", type);
+}
+
+// Internal request helper used by all three public SD calls. Acquires the
+// SD mutex, sends the REQ frame, blocks on the response semaphore, returns
+// 0 on a clean response. Negative returns: -1 = mutex timeout (another
+// SD op in progress longer than the timeout), -2 = response timeout
+// (S3 didn't reply), -3 = state init failure.
+static int sd_request_locked(uint8_t req_type, uint8_t want_resp_type,
+                             uint32_t request_id,
+                             const uint8_t *req_bytes, size_t req_len) {
+    sd_init_locked_state();
+    if (s_sd_mutex == NULL || s_sd_resp_sem == NULL) {
+        return -3;
+    }
+    const TickType_t timeout = pdMS_TO_TICKS(LINK_SD_REQUEST_TIMEOUT_MS);
+    if (xSemaphoreTake(s_sd_mutex, timeout) != pdTRUE) {
+        ESP_LOGW(TAG, "SD mutex timeout for req=0x%02x", req_type);
+        return -1;
+    }
+    // Drain any stale signal from a prior timed-out call before arming the
+    // wait — otherwise a late RESP from the previous call would falsely
+    // satisfy this one.
+    xSemaphoreTake(s_sd_resp_sem, 0);
+    s_sd_pending_id   = request_id;
+    s_sd_pending_type = want_resp_type;
+
+    send_frame(req_type, s_seq++, req_bytes, req_len);
+
+    int rc = 0;
+    if (xSemaphoreTake(s_sd_resp_sem, timeout) != pdTRUE) {
+        ESP_LOGW(TAG, "SD resp timeout for req=0x%02x id=%" PRIu32,
+                 req_type, request_id);
+        rc = -2;
+    }
+    s_sd_pending_type = 0;
+    xSemaphoreGive(s_sd_mutex);
+    return rc;
+}
+
+int link_sd_read(const char *path, uint32_t offset,
+                 uint8_t *out_buf, uint16_t buf_cap,
+                 uint16_t *out_len, uint8_t *out_eof,
+                 uint8_t *out_status) {
+    if (!path || !out_buf || buf_cap == 0) return -3;
+    const size_t plen = strnlen(path, LINK_SD_PATH_MAX + 1);
+    if (plen == 0 || plen > LINK_SD_PATH_MAX) return -3;
+
+    struct link_sd_read_req req = {
+        .request_id = s_sd_next_request_id++,
+        .offset     = offset,
+        .read_len   = (buf_cap > LINK_SD_DATA_MAX) ? LINK_SD_DATA_MAX : buf_cap,
+        .path_len   = (uint8_t)plen,
+        .reserved   = 0,
+    };
+    memcpy(req.path, path, plen);
+
+    int rc = sd_request_locked(LINK_MSG_SD_READ_REQ, LINK_MSG_SD_READ_RESP,
+                               req.request_id,
+                               (const uint8_t *)&req, sizeof(req));
+    if (rc != 0) return rc;
+
+    if (out_status) *out_status = s_sd_read_resp_slot.status;
+    if (s_sd_read_resp_slot.status != LINK_SD_STATUS_OK) {
+        if (out_len) *out_len = 0;
+        if (out_eof) *out_eof = 0;
+        return 0;
+    }
+    const uint16_t n = (s_sd_read_resp_slot.data_len > buf_cap)
+                          ? buf_cap : s_sd_read_resp_slot.data_len;
+    memcpy(out_buf, s_sd_read_resp_slot.data, n);
+    if (out_len) *out_len = n;
+    if (out_eof) *out_eof = s_sd_read_resp_slot.eof;
+    return 0;
+}
+
+int link_sd_write(const char *path, uint32_t offset,
+                  const uint8_t *data, uint16_t data_len,
+                  uint8_t flags,
+                  uint32_t *out_bytes_written,
+                  uint8_t *out_status) {
+    if (!path) return -3;
+    if (data_len > LINK_SD_DATA_MAX) return -3;
+    if (data_len > 0 && !data) return -3;
+    const size_t plen = strnlen(path, LINK_SD_PATH_MAX + 1);
+    if (plen == 0 || plen > LINK_SD_PATH_MAX) return -3;
+
+    struct link_sd_write_req req = {
+        .request_id = s_sd_next_request_id++,
+        .offset     = offset,
+        .path_len   = (uint8_t)plen,
+        .flags      = flags,
+        .data_len   = data_len,
+    };
+    memcpy(req.path, path, plen);
+    if (data_len) memcpy(req.data, data, data_len);
+
+    int rc = sd_request_locked(LINK_MSG_SD_WRITE_REQ, LINK_MSG_SD_WRITE_RESP,
+                               req.request_id,
+                               (const uint8_t *)&req, sizeof(req));
+    if (rc != 0) return rc;
+
+    if (out_status) *out_status = s_sd_write_resp_slot.status;
+    if (out_bytes_written) *out_bytes_written = s_sd_write_resp_slot.bytes_written;
+    return 0;
+}
+
+int link_sd_stat(const char *path,
+                 uint32_t *out_size_bytes,
+                 uint32_t *out_mtime_unix,
+                 uint8_t *out_is_dir,
+                 uint8_t *out_status) {
+    if (!path) return -3;
+    const size_t plen = strnlen(path, LINK_SD_PATH_MAX + 1);
+    if (plen == 0 || plen > LINK_SD_PATH_MAX) return -3;
+
+    struct link_sd_stat_req req = {
+        .request_id = s_sd_next_request_id++,
+        .path_len   = (uint8_t)plen,
+        .reserved   = { 0, 0, 0 },
+    };
+    memcpy(req.path, path, plen);
+
+    int rc = sd_request_locked(LINK_MSG_SD_STAT_REQ, LINK_MSG_SD_STAT_RESP,
+                               req.request_id,
+                               (const uint8_t *)&req, sizeof(req));
+    if (rc != 0) return rc;
+
+    if (out_status)     *out_status     = s_sd_stat_resp_slot.status;
+    if (out_size_bytes) *out_size_bytes = s_sd_stat_resp_slot.size_bytes;
+    if (out_mtime_unix) *out_mtime_unix = s_sd_stat_resp_slot.mtime_unix;
+    if (out_is_dir)     *out_is_dir     = s_sd_stat_resp_slot.is_dir;
+    return 0;
+}
+
 void link_send_status(void) {
     const uint32_t errs = s_decoder.stats.bad_crc + s_decoder.stats.bad_length +
                           s_decoder.stats.short_frame + s_decoder.stats.overflow;
@@ -272,6 +475,12 @@ static void on_frame(void *ctx, uint8_t type, uint8_t seq,
             memcpy(&req, payload, sizeof(req));
             s_gpio_req_cb(&req);
         }
+        break;
+
+    case LINK_MSG_SD_READ_RESP:
+    case LINK_MSG_SD_WRITE_RESP:
+    case LINK_MSG_SD_STAT_RESP:
+        sd_deliver_response(type, payload, len);
         break;
 
     case LINK_MSG_STATUS:

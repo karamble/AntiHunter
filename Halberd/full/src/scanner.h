@@ -257,3 +257,11 @@ void saveAllowlist(const String &txt);
 bool isAllowlisted(const uint8_t *mac);
 
 void cleanupMaps();
+
+// External sensor framework (stage 9). c5_link RX task delivers
+// SENSOR_EVENT frames here; this function formats and forwards each as
+// `<NODE_ID>: <tag> <kv>` over the existing mesh-emit path. Wire it up
+// from hardware.cpp's initializeGPS() right after c5LinkInit() via
+// c5LinkRegisterSensorEventCallback(onSensorEventFromLink).
+struct link_sensor_event;
+extern "C" void onSensorEventFromLink(const struct link_sensor_event *ev);

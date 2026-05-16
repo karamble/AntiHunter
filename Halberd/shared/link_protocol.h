@@ -13,7 +13,8 @@
 //     bytes equal the wire bytes equal the receiver's struct bytes.
 //   - Message-type bytes are grouped: 0x0x = control, 0x1x = GPS,
 //     0x2x = Wi-Fi, 0x3x = BLE, 0x4x = 802.15.4, 0x5x = I²C,
-//     0x6x = GPIO, 0xFx = housekeeping.
+//     0x6x = GPIO, 0x7x = sensor events, 0x8x = SD-proxy,
+//     0xFx = housekeeping.
 
 #include <stdint.h>
 
@@ -39,6 +40,13 @@ enum link_msg_type {
     LINK_MSG_I2C_WRITE_RESP  = 0x53,  // C5 → S3, ack of an I2C write
     LINK_MSG_GPIO_REQ        = 0x60,  // S3 → C5, configure / write / read EXP_GPIOn
     LINK_MSG_GPIO_RESP       = 0x61,  // C5 → S3, result of a GPIO op
+    LINK_MSG_SENSOR_EVENT    = 0x70,  // C5 → S3, one per emitted sensor event
+    LINK_MSG_SD_READ_REQ     = 0x80,  // C5 → S3, read N bytes from a file
+    LINK_MSG_SD_READ_RESP    = 0x81,  // S3 → C5, result of an SD read
+    LINK_MSG_SD_WRITE_REQ    = 0x82,  // C5 → S3, write N bytes to a file
+    LINK_MSG_SD_WRITE_RESP   = 0x83,  // S3 → C5, ack of an SD write
+    LINK_MSG_SD_STAT_REQ     = 0x84,  // C5 → S3, stat a file (size / exists)
+    LINK_MSG_SD_STAT_RESP    = 0x85,  // S3 → C5, result of an SD stat
     LINK_MSG_STATUS          = 0xF0,  // periodic health beacon (sender-initiated)
     LINK_MSG_LOG             = 0xFE,  // forwarded log line (C5 → S3, future stage)
 };
@@ -439,4 +447,129 @@ struct link_status_payload {
     uint16_t rx_frame_ok;   // sender's decoder ok-count, wraps
     uint16_t rx_frame_err;  // sum of bad_crc + bad_length + short_frame + overflow
     uint16_t reserved;
+} __attribute__((packed));
+
+// ── External sensor framework (stage 9) ────────────────────────────────────
+//
+// The C5 hosts a small manifest-driven driver runtime that polls external
+// sensors attached to J_EXP / J_QWIIC, formats the result as a short
+// `<tag> k=v k=v ...` payload, and pushes it to the S3 with a SENSOR_EVENT
+// frame. The S3 forwards each event verbatim to mesh as
+// `<NODE_ID>: <tag> k=v ...`, gated by a per-event cooldown.
+//
+// driver_id identifies the driver family that produced the event so the S3
+// (or downstream consumer) can apply driver-specific dedup / display rules
+// without parsing the kv blob. tag is a short ASCII label (e.g. "env",
+// "motion", "vision") that becomes the first token on the mesh line.
+
+#define LINK_SENSOR_TAG_MAX   16    // ASCII tag, e.g. "vision", "env", "motion"
+#define LINK_SENSOR_KV_MAX   192    // ASCII "k=v k=v ..." run
+
+enum link_sensor_driver_id {
+    LINK_SENSOR_DRV_NONE                = 0,
+    LINK_SENSOR_DRV_REGISTER_READ       = 1,  // generic field-schema I²C driver
+    LINK_SENSOR_DRV_SSCMA               = 2,  // SSCMA cameras (Grove Vision AI V2)
+    LINK_SENSOR_DRV_VENDOR_COMPENSATION = 3,  // BME280/680, BMP388/580, QMP6988
+    LINK_SENSOR_DRV_GPIO_DIGITAL        = 4,  // PIR, reed, vibration
+    LINK_SENSOR_DRV_QWIIC_ADC           = 5,  // ADS1015/1115 family
+};
+
+struct link_sensor_event {
+    uint32_t uptime_ms;                 // C5 uptime at emission
+    uint8_t  driver_id;                 // link_sensor_driver_id
+    uint8_t  slot;                      // manifest slot index (0..N-1)
+    uint8_t  tag_len;                   // 0..LINK_SENSOR_TAG_MAX
+    uint8_t  reserved;
+    uint16_t kv_len;                    // 0..LINK_SENSOR_KV_MAX
+    char     tag[LINK_SENSOR_TAG_MAX];  // unterminated; tag_len authoritative
+    char     kv[LINK_SENSOR_KV_MAX];    // unterminated; kv_len authoritative
+} __attribute__((packed));
+
+// ── SD-card proxy (stage 9) ────────────────────────────────────────────────
+//
+// The SD slot is wired to the S3, not the C5. To let the C5 host the
+// sensor driver runtime (which needs to read /sensors.json at boot and
+// optionally write event logs / captures) the S3 exposes a small file-IO
+// service over the link. C5-initiated, single outstanding op per type;
+// the C5 side serialises via the same semaphore + response-slot pattern
+// the S3 uses for the I²C bridge in the opposite direction.
+//
+// Path whitelist is enforced on the S3 side: only `/sensors.json`,
+// `/sensors/*`, `/sensorlogs/*`, and `/captures/*` are accessible. Any
+// path with a `..` segment is rejected. A buggy or compromised C5 build
+// cannot read wifi_config.json or scribble over arbitrary SD content.
+//
+// Chunk size is intentionally modest (128 B) so a single frame stays
+// well within LINK_MAX_PAYLOAD. Bulk writes (e.g. JPEG captures from
+// the SSCMA driver) issue many sequential WRITE_REQ frames; the S3
+// caches an open file handle keyed by path so back-to-back chunks
+// don't re-open the file.
+
+#define LINK_SD_PATH_MAX   64    // matches FatFs typical LFN-disabled cap
+#define LINK_SD_DATA_MAX  128    // bytes per read or write chunk
+
+enum link_sd_status {
+    LINK_SD_STATUS_OK         = 0,
+    LINK_SD_STATUS_NOT_FOUND  = 1,
+    LINK_SD_STATUS_DENIED     = 2,   // path failed S3-side whitelist
+    LINK_SD_STATUS_IO_ERROR   = 3,
+    LINK_SD_STATUS_BUSY       = 4,
+    LINK_SD_STATUS_BAD_PARAM  = 5,
+    LINK_SD_STATUS_NO_SD      = 6,   // SD not mounted on S3
+};
+
+// SD_WRITE_REQ.flags bits.
+enum link_sd_write_flags {
+    LINK_SD_WRITE_FLAG_CREATE_TRUNCATE = 0x01,  // open(O_CREAT|O_TRUNC) on first chunk
+    LINK_SD_WRITE_FLAG_FINAL_CHUNK     = 0x02,  // close + flush file after this chunk
+};
+
+struct link_sd_read_req {
+    uint32_t request_id;
+    uint32_t offset;
+    uint16_t read_len;                       // 1..LINK_SD_DATA_MAX
+    uint8_t  path_len;                       // 1..LINK_SD_PATH_MAX
+    uint8_t  reserved;
+    char     path[LINK_SD_PATH_MAX];         // unterminated; path_len authoritative
+} __attribute__((packed));
+
+struct link_sd_read_resp {
+    uint32_t request_id;
+    uint8_t  status;                         // link_sd_status
+    uint8_t  eof;                            // 1 if this chunk hit end-of-file
+    uint16_t data_len;                       // 0..LINK_SD_DATA_MAX
+    uint8_t  data[LINK_SD_DATA_MAX];
+} __attribute__((packed));
+
+struct link_sd_write_req {
+    uint32_t request_id;
+    uint32_t offset;                         // byte offset (informational; S3 caches handle by path)
+    uint8_t  path_len;
+    uint8_t  flags;                          // link_sd_write_flags
+    uint16_t data_len;                       // 0..LINK_SD_DATA_MAX
+    char     path[LINK_SD_PATH_MAX];
+    uint8_t  data[LINK_SD_DATA_MAX];
+} __attribute__((packed));
+
+struct link_sd_write_resp {
+    uint32_t request_id;
+    uint8_t  status;
+    uint8_t  reserved[3];
+    uint32_t bytes_written;                  // cumulative for this open handle
+} __attribute__((packed));
+
+struct link_sd_stat_req {
+    uint32_t request_id;
+    uint8_t  path_len;
+    uint8_t  reserved[3];
+    char     path[LINK_SD_PATH_MAX];
+} __attribute__((packed));
+
+struct link_sd_stat_resp {
+    uint32_t request_id;
+    uint8_t  status;
+    uint8_t  is_dir;
+    uint8_t  reserved[2];
+    uint32_t size_bytes;
+    uint32_t mtime_unix;                     // 0 if FAT timestamp unset / not parsed
 } __attribute__((packed));

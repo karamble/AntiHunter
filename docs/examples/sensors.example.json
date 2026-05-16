@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "_note": "Drop this on the S3's SD card as /sensors.json to exercise the stage-9 external-sensor framework. Each entry maps a manifest 'driver' to one driver-family file in Halberd/c5/main/sensors_drv_*.c. Edit, save, replug the card or reboot the S3 — no firmware rebuild needed.",
+
+  "sensors": [
+    {
+      "_comment": "Seeed Grove Vision AI V2 (WE-2) — SSCMA-protocol camera at fixed I²C addr 0x62. model_id picks which model slot is loaded on the WE-2 (1 is the typical default; check 'AT+MODEL?' if unsure). tscore is the confidence threshold (0-100). emit.cooldown_ms 0 = forward every detection — set higher if the stream is too chatty for mesh.",
+      "name":     "vision",
+      "driver":   "sscma",
+      "bus":      "qwiic",
+      "addr":     ["0x62"],
+      "model_id": 1,
+      "tscore":   60,
+      "poll_ms":  500,
+      "emit":     { "tag": "vision", "cooldown_ms": 0 }
+    },
+
+    {
+      "_comment": "Sensirion SHT3x — temperature + humidity, CRC-protected. Strap-selectable address 0x44 (default) or 0x45 (ADDR pin pulled high). Probe is a 'periodic data acquisition with mps=1/s' command (0x2130) — the chip ACKs and begins measuring; first sample available ~15 ms later.",
+      "name":   "ambient",
+      "driver": "register_read",
+      "bus":    "qwiic",
+      "addr":   ["0x44", "0x45"],
+      "poll_ms": 5000,
+      "probe":  { "cmd": "0x2130" },
+      "fields": [
+        { "key": "tempC",
+          "reg": "0xE000", "len": 2, "endian": "big",
+          "scale": 0.0026703, "offset": -45.0,
+          "crc": { "poly": "0x31", "init": "0xFF", "position": "after_field" } },
+        { "key": "rh",
+          "len": 2, "endian": "big",
+          "scale": 0.0015259,
+          "crc": { "poly": "0x31", "init": "0xFF", "position": "after_field" } }
+      ],
+      "emit": { "tag": "env", "cooldown_ms": 30000 }
+    },
+
+    {
+      "_comment": "TI TMP117 — high-precision temperature. Address strap 0x48..0x4B. Chip-ID register 0x0F returns 0x0117. Plain 2-byte register read, no CRC.",
+      "name":   "indoor_temp",
+      "driver": "register_read",
+      "bus":    "qwiic",
+      "addr":   ["0x48", "0x49", "0x4A", "0x4B"],
+      "poll_ms": 10000,
+      "probe":  { "reg": "0x0F", "expect": "0x01" },
+      "fields": [
+        { "key": "tempC",
+          "reg": "0x00", "len": 2, "endian": "big",
+          "scale": 0.0078125 }
+      ],
+      "emit": { "tag": "temp", "cooldown_ms": 60000 }
+    },
+
+    {
+      "_comment": "AOSong AHT20 — cheap temperature + humidity (Grove + AliExpress). Fixed address 0x38. The 'trigger measurement' command is 0xAC0033; ~80 ms later a 6-byte read returns 20-bit RH + 20-bit T sharing a middle nibble. The simple field-schema below approximates by reading 6 bytes raw and ignoring the bit-packing — adequate to confirm the driver wiring; precision tweaks land later.",
+      "name":   "cheap_env",
+      "driver": "register_read",
+      "bus":    "qwiic",
+      "addr":   ["0x38"],
+      "poll_ms": 10000,
+      "probe":  { "cmd": "0xAC" },
+      "fields": [
+        { "key": "raw0", "len": 1 },
+        { "key": "raw1", "len": 1 },
+        { "key": "raw2", "len": 1 }
+      ],
+      "emit": { "tag": "aht", "cooldown_ms": 30000 }
+    }
+  ]
+}

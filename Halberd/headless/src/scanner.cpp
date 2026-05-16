@@ -3200,6 +3200,31 @@ static bool extractSsidFromProbe(const uint8_t *payload, uint16_t frameLen, char
 
 static const size_t PROBE_HIT_COOLDOWN_MAX = 500;
 
+// ── External sensor framework (stage 9) ───────────────────────────────────
+// Mirror of Halberd/full/src/scanner.cpp — see comments there.
+extern "C" void onSensorEventFromLink(const struct link_sensor_event *ev) {
+    if (ev == nullptr) return;
+
+    const uint8_t tag_len = ev->tag_len > LINK_SENSOR_TAG_MAX ? LINK_SENSOR_TAG_MAX : ev->tag_len;
+    const uint16_t kv_len = ev->kv_len  > LINK_SENSOR_KV_MAX  ? LINK_SENSOR_KV_MAX  : ev->kv_len;
+    if (tag_len == 0) return;
+
+    String tag;
+    tag.reserve(tag_len);
+    tag.concat(ev->tag, tag_len);
+
+    String msg = getNodeId() + ": " + tag;
+    if (kv_len > 0) {
+        msg += ' ';
+        msg.concat(ev->kv, kv_len);
+    }
+
+    if (msg.length() > MAX_MESH_SIZE) {
+        msg.remove(MAX_MESH_SIZE);
+    }
+    sendToSerial1(msg, true);
+}
+
 static bool shouldSendProbeHit(const String &key)
 {
     uint32_t now = millis();

@@ -1,7 +1,9 @@
 #include "c5_link.h"
 
 #include <Arduino.h>
+#include <FS.h>
 #include <HardwareSerial.h>
+#include <SD.h>
 #include <string.h>
 
 #include "hardware.h"
@@ -58,6 +60,54 @@ struct link_i2c_read_resp  s_exp_i2c_read_resp;
 struct link_i2c_write_resp s_exp_i2c_write_resp;
 struct link_gpio_resp      s_exp_gpio_resp;
 volatile uint8_t           s_exp_expected_type = 0;  // wire LINK_MSG_*_RESP we're waiting for
+
+// ── SD-proxy server state (stage 9) ───────────────────────────────────────
+//
+// The C5 hosts the sensor driver runtime and needs file IO; we expose it
+// over the link by enqueuing each incoming SD_*_REQ into a worker queue,
+// processing it on a dedicated FreeRTOS task so SD-card latency never
+// stalls the link RX path. The worker holds a small LRU cache of open
+// fs::File handles keyed by path so back-to-back chunk writes don't
+// re-open the file every frame.
+
+constexpr size_t   C5_LINK_SD_QUEUE_LEN     = 4;
+constexpr size_t   C5_LINK_SD_HANDLE_CACHE  = 4;
+constexpr uint32_t C5_LINK_SD_IDLE_CLOSE_MS = 1000;
+
+enum sd_op_kind : uint8_t {
+    SD_OP_READ  = 1,
+    SD_OP_WRITE = 2,
+    SD_OP_STAT  = 3,
+};
+
+// One queued SD request. The link RX path memcpys the wire frame into the
+// appropriate union member and pushes by value. The worker pops by value
+// so the wire buffer can be reused for the next frame immediately.
+struct sd_op_t {
+    uint8_t kind;  // sd_op_kind
+    union {
+        struct link_sd_read_req  read_req;
+        struct link_sd_write_req write_req;
+        struct link_sd_stat_req  stat_req;
+    };
+};
+
+struct sd_cache_slot {
+    bool     used;
+    bool     write_mode;            // FILE_WRITE vs FILE_READ
+    char     path[LINK_SD_PATH_MAX + 1];
+    fs::File file;
+    uint32_t last_used_ms;
+    uint32_t bytes_written;         // cumulative since open (write_mode only)
+};
+
+QueueHandle_t s_sd_queue = nullptr;
+sd_cache_slot s_sd_cache[C5_LINK_SD_HANDLE_CACHE];
+
+// Sensor-event callback (stage 9). Registered by scanner.cpp so received
+// SENSOR_EVENT frames flow into the mesh-emit path. Called from the link
+// RX task; the callback must copy what it needs and return promptly.
+c5LinkSensorEventCb s_sensor_event_cb = nullptr;
 
 void send_frame(uint8_t type, uint8_t seq,
                 const uint8_t *payload, size_t len) {
@@ -117,6 +167,278 @@ void apply_gps_fix(const struct link_gps_fix &fix) {
                     + " HDOP=" + String(gpsHDOP, 2) + ")";
     } else {
         lastGPSData = "No valid GPS fix (sats=" + String((int)gpsSatellites) + ")";
+    }
+}
+
+// ── SD-proxy server helpers ───────────────────────────────────────────────
+
+// Path whitelist. The C5-hosted driver runtime is only allowed to touch
+// files under /sensors.json, /sensors/, /sensorlogs/, /captures/. Any
+// `..` segment is rejected so a buggy or compromised C5 build cannot
+// traverse out. Returns true if the path is allowed AND well-formed.
+bool sd_path_allowed(const char *path, uint8_t plen) {
+    if (path == nullptr || plen == 0 || plen > LINK_SD_PATH_MAX) {
+        return false;
+    }
+    if (path[0] != '/') {
+        return false;
+    }
+    // Reject `..` anywhere — covers /.. and /foo/../bar.
+    for (uint8_t i = 0; i + 1 < plen; i++) {
+        if (path[i] == '.' && path[i + 1] == '.') {
+            return false;
+        }
+    }
+    // Exact match for the manifest. /sensors.json is 13 bytes; plen
+    // carries the wire length without NUL.
+    if (plen == 13 && memcmp(path, "/sensors.json", 13) == 0) {
+        return true;
+    }
+    auto starts_with = [&](const char *prefix, uint8_t prefix_len) -> bool {
+        return plen >= prefix_len && memcmp(path, prefix, prefix_len) == 0;
+    };
+    if (starts_with("/sensors/",    9)) return true;
+    if (starts_with("/sensorlogs/", 12)) return true;
+    if (starts_with("/captures/",   10)) return true;
+    return false;
+}
+
+// Build a NUL-terminated C string from the unterminated path field.
+void sd_path_to_cstr(const char *path, uint8_t plen, char out[LINK_SD_PATH_MAX + 1]) {
+    if (plen > LINK_SD_PATH_MAX) plen = LINK_SD_PATH_MAX;
+    memcpy(out, path, plen);
+    out[plen] = '\0';
+}
+
+// Close any cache slots that have been idle longer than the threshold.
+// Called from the worker task before each op to keep the cache fresh
+// without needing a separate maintenance task.
+void sd_cache_evict_idle() {
+    const uint32_t now = (uint32_t)millis();
+    for (auto &slot : s_sd_cache) {
+        if (slot.used && (now - slot.last_used_ms) >= C5_LINK_SD_IDLE_CLOSE_MS) {
+            if (slot.file) slot.file.close();
+            slot.used = false;
+            slot.bytes_written = 0;
+            slot.path[0] = '\0';
+        }
+    }
+}
+
+// Look up an existing cache slot by path + access mode. Returns nullptr
+// if no match. Updates last_used_ms on hit.
+sd_cache_slot *sd_cache_find(const char *path, bool write_mode) {
+    for (auto &slot : s_sd_cache) {
+        if (slot.used && slot.write_mode == write_mode &&
+            strncmp(slot.path, path, LINK_SD_PATH_MAX) == 0) {
+            slot.last_used_ms = (uint32_t)millis();
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+// Allocate a cache slot, evicting the least-recently-used if none free.
+sd_cache_slot *sd_cache_alloc(const char *path, bool write_mode) {
+    sd_cache_slot *lru = &s_sd_cache[0];
+    for (auto &slot : s_sd_cache) {
+        if (!slot.used) {
+            lru = &slot;
+            break;
+        }
+        if (slot.last_used_ms < lru->last_used_ms) lru = &slot;
+    }
+    if (lru->used && lru->file) lru->file.close();
+    lru->used         = true;
+    lru->write_mode   = write_mode;
+    lru->last_used_ms = (uint32_t)millis();
+    lru->bytes_written = 0;
+    strncpy(lru->path, path, LINK_SD_PATH_MAX);
+    lru->path[LINK_SD_PATH_MAX] = '\0';
+    return lru;
+}
+
+// Explicitly close + free a cache slot (e.g. on FINAL_CHUNK).
+void sd_cache_close(sd_cache_slot *slot) {
+    if (!slot) return;
+    if (slot->file) slot->file.close();
+    slot->used = false;
+    slot->bytes_written = 0;
+    slot->path[0] = '\0';
+}
+
+void sd_handle_read(const struct link_sd_read_req &req) {
+    struct link_sd_read_resp resp = {};
+    resp.request_id = req.request_id;
+    if (!sd_path_allowed(req.path, req.path_len)) {
+        resp.status = LINK_SD_STATUS_DENIED;
+        send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    if (!SafeSD::isAvailable()) {
+        resp.status = LINK_SD_STATUS_NO_SD;
+        send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    char path_cstr[LINK_SD_PATH_MAX + 1];
+    sd_path_to_cstr(req.path, req.path_len, path_cstr);
+
+    sd_cache_slot *slot = sd_cache_find(path_cstr, false);
+    if (!slot) {
+        if (!SafeSD::exists(path_cstr)) {
+            resp.status = LINK_SD_STATUS_NOT_FOUND;
+            send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                       (const uint8_t *)&resp, sizeof(resp));
+            return;
+        }
+        slot = sd_cache_alloc(path_cstr, false);
+        slot->file = SafeSD::open(path_cstr, FILE_READ);
+        if (!slot->file) {
+            sd_cache_close(slot);
+            resp.status = LINK_SD_STATUS_IO_ERROR;
+            send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                       (const uint8_t *)&resp, sizeof(resp));
+            return;
+        }
+    }
+
+    if (!slot->file.seek(req.offset)) {
+        resp.status = LINK_SD_STATUS_IO_ERROR;
+        send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    uint16_t want = req.read_len > LINK_SD_DATA_MAX ? LINK_SD_DATA_MAX : req.read_len;
+    int got = SafeSD::read(slot->file, resp.data, want);
+    if (got < 0) {
+        resp.status = LINK_SD_STATUS_IO_ERROR;
+        send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    resp.status   = LINK_SD_STATUS_OK;
+    resp.data_len = (uint16_t)got;
+    resp.eof      = (got < want || (uint32_t)slot->file.position() >= (uint32_t)slot->file.size()) ? 1 : 0;
+    send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+               (const uint8_t *)&resp, sizeof(resp));
+}
+
+void sd_handle_write(const struct link_sd_write_req &req) {
+    struct link_sd_write_resp resp = {};
+    resp.request_id = req.request_id;
+    if (!sd_path_allowed(req.path, req.path_len)) {
+        resp.status = LINK_SD_STATUS_DENIED;
+        send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    if (!SafeSD::isAvailable()) {
+        resp.status = LINK_SD_STATUS_NO_SD;
+        send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    char path_cstr[LINK_SD_PATH_MAX + 1];
+    sd_path_to_cstr(req.path, req.path_len, path_cstr);
+
+    sd_cache_slot *slot = sd_cache_find(path_cstr, true);
+    const bool first_chunk = (req.flags & LINK_SD_WRITE_FLAG_CREATE_TRUNCATE) != 0;
+    if (slot && first_chunk) {
+        // Caller asked to truncate; close + reopen.
+        sd_cache_close(slot);
+        slot = nullptr;
+    }
+    if (!slot) {
+        slot = sd_cache_alloc(path_cstr, true);
+        const char *mode = first_chunk ? FILE_WRITE : FILE_APPEND;
+        slot->file = SafeSD::open(path_cstr, mode);
+        if (!slot->file) {
+            sd_cache_close(slot);
+            resp.status = LINK_SD_STATUS_IO_ERROR;
+            send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+                       (const uint8_t *)&resp, sizeof(resp));
+            return;
+        }
+    }
+    if (req.data_len > 0) {
+        size_t wrote = SafeSD::write(slot->file, req.data, req.data_len);
+        if (wrote != req.data_len) {
+            sd_cache_close(slot);
+            resp.status = LINK_SD_STATUS_IO_ERROR;
+            send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+                       (const uint8_t *)&resp, sizeof(resp));
+            return;
+        }
+        slot->bytes_written += wrote;
+    }
+    if (req.flags & LINK_SD_WRITE_FLAG_FINAL_CHUNK) {
+        SafeSD::flush(slot->file);
+        const uint32_t final_bytes = slot->bytes_written;
+        sd_cache_close(slot);
+        resp.status        = LINK_SD_STATUS_OK;
+        resp.bytes_written = final_bytes;
+    } else {
+        resp.status        = LINK_SD_STATUS_OK;
+        resp.bytes_written = slot->bytes_written;
+    }
+    send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+               (const uint8_t *)&resp, sizeof(resp));
+}
+
+void sd_handle_stat(const struct link_sd_stat_req &req) {
+    struct link_sd_stat_resp resp = {};
+    resp.request_id = req.request_id;
+    if (!sd_path_allowed(req.path, req.path_len)) {
+        resp.status = LINK_SD_STATUS_DENIED;
+        send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    if (!SafeSD::isAvailable()) {
+        resp.status = LINK_SD_STATUS_NO_SD;
+        send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    char path_cstr[LINK_SD_PATH_MAX + 1];
+    sd_path_to_cstr(req.path, req.path_len, path_cstr);
+
+    if (!SafeSD::exists(path_cstr)) {
+        resp.status = LINK_SD_STATUS_NOT_FOUND;
+        send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    // Re-open for stat to read size; no API on SafeSD for direct stat.
+    fs::File f = SafeSD::open(path_cstr, FILE_READ);
+    if (!f) {
+        resp.status = LINK_SD_STATUS_IO_ERROR;
+        send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+                   (const uint8_t *)&resp, sizeof(resp));
+        return;
+    }
+    resp.status     = LINK_SD_STATUS_OK;
+    resp.is_dir     = f.isDirectory() ? 1 : 0;
+    resp.size_bytes = (uint32_t)f.size();
+    resp.mtime_unix = 0;  // FatFs typically lacks valid mtime; leave 0
+    f.close();
+    send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+               (const uint8_t *)&resp, sizeof(resp));
+}
+
+void sd_proxy_task(void * /*arg*/) {
+    sd_op_t op;
+    for (;;) {
+        if (xQueueReceive(s_sd_queue, &op, portMAX_DELAY) != pdTRUE) continue;
+        sd_cache_evict_idle();
+        switch (op.kind) {
+        case SD_OP_READ:  sd_handle_read(op.read_req);   break;
+        case SD_OP_WRITE: sd_handle_write(op.write_req); break;
+        case SD_OP_STAT:  sd_handle_stat(op.stat_req);   break;
+        default: break;
+        }
     }
 }
 
@@ -327,6 +649,59 @@ void on_frame(void * /*ctx*/, uint8_t type, uint8_t seq,
         }
         break;
 
+    case LINK_MSG_SENSOR_EVENT:
+        if (len == sizeof(struct link_sensor_event) && s_sensor_event_cb != nullptr) {
+            struct link_sensor_event ev;
+            memcpy(&ev, payload, sizeof(ev));
+            s_sensor_event_cb(&ev);
+        }
+        break;
+
+    case LINK_MSG_SD_READ_REQ:
+        if (len == sizeof(struct link_sd_read_req) && s_sd_queue != nullptr) {
+            sd_op_t op;
+            op.kind = SD_OP_READ;
+            memcpy(&op.read_req, payload, sizeof(op.read_req));
+            if (xQueueSend(s_sd_queue, &op, 0) != pdTRUE) {
+                struct link_sd_read_resp r = {};
+                r.request_id = op.read_req.request_id;
+                r.status     = LINK_SD_STATUS_BUSY;
+                send_frame(LINK_MSG_SD_READ_RESP, s_seq++,
+                           (const uint8_t *)&r, sizeof(r));
+            }
+        }
+        break;
+
+    case LINK_MSG_SD_WRITE_REQ:
+        if (len == sizeof(struct link_sd_write_req) && s_sd_queue != nullptr) {
+            sd_op_t op;
+            op.kind = SD_OP_WRITE;
+            memcpy(&op.write_req, payload, sizeof(op.write_req));
+            if (xQueueSend(s_sd_queue, &op, 0) != pdTRUE) {
+                struct link_sd_write_resp r = {};
+                r.request_id = op.write_req.request_id;
+                r.status     = LINK_SD_STATUS_BUSY;
+                send_frame(LINK_MSG_SD_WRITE_RESP, s_seq++,
+                           (const uint8_t *)&r, sizeof(r));
+            }
+        }
+        break;
+
+    case LINK_MSG_SD_STAT_REQ:
+        if (len == sizeof(struct link_sd_stat_req) && s_sd_queue != nullptr) {
+            sd_op_t op;
+            op.kind = SD_OP_STAT;
+            memcpy(&op.stat_req, payload, sizeof(op.stat_req));
+            if (xQueueSend(s_sd_queue, &op, 0) != pdTRUE) {
+                struct link_sd_stat_resp r = {};
+                r.request_id = op.stat_req.request_id;
+                r.status     = LINK_SD_STATUS_BUSY;
+                send_frame(LINK_MSG_SD_STAT_RESP, s_seq++,
+                           (const uint8_t *)&r, sizeof(r));
+            }
+        }
+        break;
+
     case LINK_MSG_STATUS:
         if (len == sizeof(struct link_status_payload)) {
             struct link_status_payload p;
@@ -380,6 +755,14 @@ void c5LinkInit(void) {
     s_wifi_probe_queue = xQueueCreate(C5_LINK_WIFI_PROBE_QUEUE_LEN,  sizeof(C5WifiProbeEvent));
     s_exp_lock = xSemaphoreCreateMutex();
     s_exp_done = xSemaphoreCreateBinary();
+    s_sd_queue = xQueueCreate(C5_LINK_SD_QUEUE_LEN, sizeof(sd_op_t));
+    for (auto &slot : s_sd_cache) {
+        slot.used         = false;
+        slot.write_mode   = false;
+        slot.path[0]      = '\0';
+        slot.last_used_ms = 0;
+        slot.bytes_written = 0;
+    }
     link_decoder_init(&s_decoder);
 
     s_uart.setRxBufferSize(1024);
@@ -389,6 +772,7 @@ void c5LinkInit(void) {
     s_last_ping_ms = (uint32_t)millis();
 
     xTaskCreatePinnedToCore(link_task, "c5link", 4096, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(sd_proxy_task, "c5sdproxy", 4096, nullptr, 2, nullptr, 1);
 
     Serial.printf("[c5link] init UART%d tx=%d rx=%d baud=%u\n",
                   C5_LINK_UART_NUM,
@@ -640,6 +1024,10 @@ int c5LinkGpioWrite(uint8_t pin_index, bool value, uint32_t timeout_ms) {
 int c5LinkGpioRead(uint8_t pin_index, uint8_t *out_value, uint32_t timeout_ms) {
     if (out_value == nullptr) return /*BAD_PARAM*/ 4;
     return gpioOp(pin_index, LINK_GPIO_OP_READ, 0, 0, out_value, timeout_ms);
+}
+
+void c5LinkRegisterSensorEventCallback(c5LinkSensorEventCb cb) {
+    s_sensor_event_cb = cb;
 }
 
 void c5LinkSendPing(void) {

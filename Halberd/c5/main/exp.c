@@ -22,6 +22,11 @@ static const char *TAG = "exp";
 static i2c_master_bus_handle_t s_i2c_bus;
 static bool s_i2c_ready;
 
+// 128-bit bitmap of I²C addresses that ACKed during the most recent
+// scan. addr / 8 indexes the byte; addr % 8 indexes the bit. exp_init()
+// fills this from the boot-time scan; exp_i2c_rescan() refreshes it.
+static uint8_t s_i2c_present[16];
+
 // EXP_GPIO0..4 → ESP32-C5 GPIO numbers, per hardware.h.
 static const gpio_num_t s_exp_pins[LINK_EXP_GPIO_COUNT] = {
     HALBERD_C5_EXP_GPIO0,
@@ -207,18 +212,25 @@ static void on_gpio_req(const struct link_gpio_req *req) {
 }
 
 void exp_init(void) {
-    // v5 carrier has NO I²C pull-ups (see feedback_c5_i2c_pullups);
-    // we rely on the plugged-in Qwiic / STEMMA QT module's onboard
-    // pulls. Internal pull-ups stay off for the same reason
-    // (typical module pulls are 4.7-10 kΩ; doubling with our internal
-    // ~45 kΩ wouldn't help but isn't necessary either).
+    // v5 carrier has no on-board I²C pull-ups. Most SparkFun Qwiic
+    // modules supply their own ~4.7 kΩ pulls and the bus comes up
+    // fine when one is plugged in. But two real bench cases need
+    // the C5's own internal pulls as a fallback:
+    //   1. J_EXP raw-wire setups with a slave that doesn't carry
+    //      pulls (Grove-ecosystem Vision AI V2 with no host MCU).
+    //   2. Grove carrier with its host MCU (C3) pulled — the C3 was
+    //      silently providing the bus pulls and removing it leaves
+    //      the bus floating.
+    // The ESP32-C5 internal pulls are weak (~45 kΩ) but adequate at
+    // 100 kHz; when external ~4.7 kΩ pulls are also present they
+    // parallel to ~4.3 kΩ, well inside the I²C spec envelope.
     i2c_master_bus_config_t cfg = {0};
     cfg.i2c_port = EXP_I2C_PORT;
     cfg.sda_io_num = HALBERD_C5_EXP_SDA_GPIO;
     cfg.scl_io_num = HALBERD_C5_EXP_SCL_GPIO;
     cfg.clk_source = I2C_CLK_SRC_DEFAULT;
     cfg.glitch_ignore_cnt = 7;
-    cfg.flags.enable_internal_pullup = false;
+    cfg.flags.enable_internal_pullup = true;
 
     esp_err_t err = i2c_new_master_bus(&cfg, &s_i2c_bus);
     if (err != ESP_OK) {
@@ -237,22 +249,86 @@ void exp_init(void) {
              (int)s_exp_pins[0], (int)s_exp_pins[1], (int)s_exp_pins[2],
              (int)s_exp_pins[3], (int)s_exp_pins[4]);
 
-    // Boot-time I²C bus scan. Probes every 7-bit address and reports
-    // responders. Logs to the C5's USB Serial/JTAG console so an
-    // operator can see what's plugged into J_EXP / J_QWIIC without
-    // any S3 involvement.
-    if (s_i2c_ready) {
-        int found = 0;
-        ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
-        for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-            if (i2c_master_probe(s_i2c_bus, addr, 50) == ESP_OK) {
-                const char *hint = "";
-                if (addr == 0x62) hint = " (Grove Vision AI V2 / WE-2)";
-                else if (addr == 0x28) hint = " (Grove Vision AI camera sensor?)";
-                ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
-                found++;
-            }
-        }
-        ESP_LOGI(TAG, "i2c scan: done, %d device(s)", found);
+    // Boot-time I²C scan deliberately deferred: a stuck-low bus at
+    // exp_init time produces a wall of probe timeouts and on some
+    // configurations seems to wedge the IDF I²C master enough to
+    // cause a reboot loop. The sensor framework's load_manifest()
+    // calls exp_i2c_rescan() later (after the 2 s grace) with the
+    // bus typically settled, which is a safer moment.
+}
+
+bool exp_i2c_addr_present(uint8_t addr) {
+    if (addr > 0x7F) return false;
+    return (s_i2c_present[addr / 8] & (1u << (addr % 8))) != 0;
+}
+
+void exp_i2c_rescan(void) {
+    if (!s_i2c_ready) return;
+
+    // One-shot SDA/SCL idle-level diagnostic before the scan. Logs
+    // whether the bus is electrically free. If either reads 0,
+    // probes will time out — likely cause is no pull-ups in the
+    // circuit, slave holding the line, or a wiring short.
+    {
+        const gpio_num_t sda = HALBERD_C5_EXP_SDA_GPIO;
+        const gpio_num_t scl = HALBERD_C5_EXP_SCL_GPIO;
+        gpio_config_t io = {0};
+        io.intr_type    = GPIO_INTR_DISABLE;
+        io.mode         = GPIO_MODE_INPUT;
+        io.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
+        io.pull_up_en   = GPIO_PULLUP_ENABLE;
+        io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        gpio_config(&io);
+        // Brief settling time for the weak ~45 kΩ pulls to charge
+        // the bus capacitance.
+        for (volatile int spin = 0; spin < 10000; spin++) { }
+        int sda_lvl = gpio_get_level(sda);
+        int scl_lvl = gpio_get_level(scl);
+        ESP_LOGI(TAG, "i2c idle: SDA=%d SCL=%d", sda_lvl, scl_lvl);
     }
+
+    memset(s_i2c_present, 0, sizeof(s_i2c_present));
+    int found = 0;
+    ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (i2c_master_probe(s_i2c_bus, addr, 50) == ESP_OK) {
+            s_i2c_present[addr / 8] |= (1u << (addr % 8));
+            const char *hint = "";
+            if (addr == 0x62) hint = " (Grove Vision AI V2 / WE-2)";
+            else if (addr == 0x28) hint = " (Grove Vision AI camera sensor?)";
+            ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
+            found++;
+        }
+    }
+    ESP_LOGI(TAG, "i2c scan: done, %d device(s)", found);
+}
+
+esp_err_t exp_i2c_xfer(uint8_t addr,
+                       const uint8_t *write_buf, size_t write_len,
+                       uint8_t *read_buf, size_t read_len) {
+    if (!s_i2c_ready) return ESP_ERR_INVALID_STATE;
+    if (write_len == 0 && read_len == 0) return ESP_ERR_INVALID_ARG;
+    if ((write_len > 0 && !write_buf) || (read_len > 0 && !read_buf)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    i2c_device_config_t devcfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = addr,
+        .scl_speed_hz    = EXP_I2C_FREQ_HZ,
+    };
+    i2c_master_dev_handle_t dev = NULL;
+    esp_err_t err = i2c_master_bus_add_device(s_i2c_bus, &devcfg, &dev);
+    if (err != ESP_OK) return err;
+
+    if (write_len > 0 && read_len > 0) {
+        err = i2c_master_transmit_receive(dev, write_buf, write_len,
+                                          read_buf, read_len,
+                                          EXP_I2C_TIMEOUT_MS);
+    } else if (write_len > 0) {
+        err = i2c_master_transmit(dev, write_buf, write_len, EXP_I2C_TIMEOUT_MS);
+    } else {
+        err = i2c_master_receive(dev, read_buf, read_len, EXP_I2C_TIMEOUT_MS);
+    }
+    i2c_master_bus_rm_device(dev);
+    return err;
 }

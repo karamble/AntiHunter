@@ -20,6 +20,7 @@
 #include "hardware.h"
 #include "ieee802154.h"
 #include "link.h"
+#include "sensors.h"
 #include "wifi.h"
 #include "wifi_sniff.h"
 
@@ -67,6 +68,13 @@ void app_main(void) {
     ble_init();
     ieee802154_init();
     exp_init();
+    // Stage 9 external-sensor framework. Spawns its own task that:
+    //   1. fetches /sensors.json from the S3 via SD-proxy at boot,
+    //   2. probes each manifest entry against the boot-time I²C scan,
+    //   3. round-robins active slots and emits SENSOR_EVENT frames.
+    // Gated on SD-card presence — no card / no manifest → sleeps and
+    // re-probes every 30 s so hot-insertion comes up without reboot.
+    sensors_init();
 
     // Periodic housekeeping: status beacon + decoder stats every 30 s. The
     // link task itself fires a PING every 5 s (see link.c); the GPS task
