@@ -413,11 +413,12 @@ static void sensors_task(void *arg) {
     //      from spurious SLEEPING transitions if the S3 is slow.
     //   2. Smart I²C peripherals (notably the Grove Vision AI V2 / WE-2)
     //      have finished their own boot and released the bus. The
-    //      WE-2 holds SCL clock-stretched for several seconds during
-    //      its firmware load; until then every i2c_master_probe
-    //      against any address times out. 6 s is enough for the WE-2
-    //      to settle without making the boot UX feel laggy.
-    vTaskDelay(pdMS_TO_TICKS(6000));
+    //      WE-2's firmware load is substantially longer than typical
+    //      Qwiic devices — bench observation shows >10 s before it
+    //      releases SCL and starts ACKing. 12 s gives comfortable
+    //      headroom without making the boot UX feel laggy; per-attempt
+    //      rescan below picks up devices that take even longer.
+    vTaskDelay(pdMS_TO_TICKS(12000));
 
     for (;;) {
         switch (s_state) {
