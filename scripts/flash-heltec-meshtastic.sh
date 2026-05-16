@@ -184,7 +184,11 @@ if ! $CONFIG_ONLY && ! $CONFIRM_CONFIG; then
     fi
     unzip -q "$TMPDIR/$ZIP_NAME" -d "$TMPDIR/extracted"
 
-    FIRMWARE_BIN=$(find "$TMPDIR/extracted" -name "firmware-heltec-v3-*.bin" | head -1)
+    # Release asset naming: the main factory image is `firmware-heltec-v3-<ver>.bin`
+    # (no .factory.bin suffix since ~2.7). The `*-update.bin` sibling is the OTA
+    # delta image and must be excluded — flashing it at 0x00 overwrites the
+    # bootloader and bricks the device until it is re-flashed in boot mode.
+    FIRMWARE_BIN=$(find "$TMPDIR/extracted" -name "firmware-heltec-v3-*.bin" ! -name "*-update.bin" | head -1)
     BLEOTA_BIN=$(find "$TMPDIR/extracted" -name "bleota-s3.bin" | head -1)
     LITTLEFS_BIN=$(find "$TMPDIR/extracted" -name "littlefs-heltec-v3-*.bin" | head -1)
     if [ -z "$FIRMWARE_BIN" ] || [ -z "$BLEOTA_BIN" ] || [ -z "$LITTLEFS_BIN" ]; then

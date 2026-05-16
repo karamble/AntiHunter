@@ -17,6 +17,8 @@
 #include "triangulation.h"
 #include "baseline.h"
 #include "main.h"
+#include "c5_link.h"
+#include "link_protocol.h"
 
 extern "C"
 {
@@ -118,6 +120,143 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type);
 // Scan intervals
 uint32_t WIFI_SCAN_INTERVAL = 4000;
 uint32_t BLE_SCAN_INTERVAL = 2000;
+
+// ── C5 5 GHz mirror scan (stage 4) ─────────────────────────────────────────
+// Channels paired with each 2.4 GHz scan on the S3 side. Country "01" on
+// the C5 enables passive scan on UNII-1 + UNII-2A + UNII-2C globally;
+// UNII-3 (149-165) is US/CA/AU-only and is omitted here. The C5 silently
+// skips any channel its current regulatory domain disallows.
+static const uint8_t C5_WIFI_5GHZ_CHANNELS[] = {
+    36, 40, 44, 48,                              // UNII-1
+    52, 56, 60, 64,                              // UNII-2A (DFS, passive)
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,  // UNII-2C (DFS)
+};
+static const uint8_t C5_WIFI_5GHZ_COUNT = sizeof(C5_WIFI_5GHZ_CHANNELS);
+
+static uint32_t triggerC5WifiScan() {
+    uint32_t id = millis();
+    const uint16_t total_ms = (uint16_t)(rfConfig.wifiChannelTime * C5_WIFI_5GHZ_COUNT);
+    c5LinkWifiScanStart(id, C5_WIFI_5GHZ_CHANNELS, C5_WIFI_5GHZ_COUNT,
+                        total_ms, /*passive=*/true);
+    return id;
+}
+
+// Kick a 5 GHz probe sniff on the C5 (stage 8). Used by probeDetectionTask
+// only — sniffer/hunter modes use triggerC5WifiScan() instead since AP
+// scans are what they need. 9 s sniff window leaves a 1 s gap before the
+// next re-arm, giving the C5 room to flush its TX queue and the wifi.c
+// scan task a slot to pick up any concurrent SCAN_REQ.
+#define C5_WIFI_PROBE_SNIFF_MS  9000
+static uint32_t triggerC5WifiProbeSniff() {
+    uint32_t id = millis();
+    c5LinkWifiProbeSniffStart(id, C5_WIFI_5GHZ_CHANNELS, C5_WIFI_5GHZ_COUNT,
+                              C5_WIFI_PROBE_SNIFF_MS, /*capture_responses=*/true);
+    return id;
+}
+
+// ── C5 BLE mirror scan (stage 5) ───────────────────────────────────────────
+#define C5_BLE_PHY_DEFAULT  (LINK_BLE_PHY_1M | LINK_BLE_PHY_CODED)
+#define C5_BLE_DURATION_MS  2000
+
+static uint32_t triggerC5BleScan() {
+    uint32_t id = millis();
+    c5LinkBleScanStart(id, C5_BLE_DURATION_MS,
+                       C5_BLE_PHY_DEFAULT, /*active=*/false,
+                       /*interval_ms=*/0, /*window_ms=*/0);
+    return id;
+}
+
+// ── C5 IEEE 802.15.4 sniffer (stage 6) ─────────────────────────────────────
+static const uint8_t C5_IEEE_CHANNELS[] = {
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+};
+static const uint8_t C5_IEEE_CHANNEL_COUNT = sizeof(C5_IEEE_CHANNELS);
+#define C5_IEEE_DURATION_MS  2000
+
+static uint32_t triggerC5IeeeScan() {
+    uint32_t id = millis();
+    c5LinkIeeeScanStart(id, C5_IEEE_CHANNELS, C5_IEEE_CHANNEL_COUNT,
+                        C5_IEEE_DURATION_MS);
+    return id;
+}
+
+static const char *ieeeProtoName(uint8_t fam) {
+    switch (fam) {
+    case 1:  return "Zigbee";
+    case 2:  return "Thread";
+    case 3:  return "Matter";
+    case 99: return "Other";
+    default: return "Unknown";
+    }
+}
+
+static const char *ieeeFrameTypeName(uint8_t t) {
+    switch (t) {
+    case 0: return "Beacon";
+    case 1: return "Data";
+    case 2: return "Ack";
+    case 3: return "Cmd";
+    default: return "Frame";
+    }
+}
+
+static int drainC5IeeeDetections() {
+    C5Ieee802154Detection det;
+    int count = 0;
+    while (c5LinkIeeeDrainResult(&det)) {
+        char srcAddrBuf[24];
+        if (det.src_addr_mode == 3) {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf),
+                     "%02X%02X%02X%02X%02X%02X%02X%02X",
+                     det.src_addr[0], det.src_addr[1], det.src_addr[2], det.src_addr[3],
+                     det.src_addr[4], det.src_addr[5], det.src_addr[6], det.src_addr[7]);
+        } else if (det.src_addr_mode == 2) {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf), "%04X",
+                     (unsigned)det.src_addr[0] | ((unsigned)det.src_addr[1] << 8));
+        } else {
+            snprintf(srcAddrBuf, sizeof(srcAddrBuf), "-");
+        }
+        String logEntry = String("802.15.4 (C5/") + ieeeProtoName(det.protocol_family) + "/" +
+                          ieeeFrameTypeName(det.frame_type) + "): ch=" + String((int)det.channel) +
+                          " RSSI=" + String((int)det.rssi) + "dBm" +
+                          " LQI=" + String((int)det.lqi) +
+                          " PAN=0x" + String(det.src_pan == 0xFFFF ? det.dst_pan : det.src_pan, HEX) +
+                          " SRC=" + String(srcAddrBuf);
+        if (gpsValid) {
+            if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                logEntry += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                xSemaphoreGive(gpsMutex);
+            }
+        }
+        Serial.println("[SCAN] " + logEntry);
+        logToSD(logEntry);
+        count++;
+    }
+    return count;
+}
+
+static void c5ApToHit(const C5WifiAp &ap, Hit &out, String &outBssid, String &outSsid) {
+    char macBuf[18];
+    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             ap.bssid[0], ap.bssid[1], ap.bssid[2],
+             ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+    outBssid = String(macBuf);
+
+    size_t slen = ap.ssid_len > 32 ? 32 : ap.ssid_len;
+    char ssidBuf[33];
+    if (slen > 0) memcpy(ssidBuf, ap.ssid, slen);
+    ssidBuf[slen] = '\0';
+    outSsid = String(ssidBuf);
+    if (outSsid.length() == 0) outSsid = "[Hidden]";
+
+    memcpy(out.mac, ap.bssid, 6);
+    out.rssi = ap.rssi;
+    out.ch   = ap.channel;
+    strncpy(out.name, outSsid.c_str(), sizeof(out.name) - 1);
+    out.name[sizeof(out.name) - 1] = '\0';
+    out.isBLE = false;
+}
+
 
 // Scanner status variables
 std::atomic<bool> scanning(false);
@@ -1052,6 +1191,8 @@ void snifferScanTask(void *pv)
 
     unsigned long lastBLEScan = 0;
     unsigned long lastWiFiScan = 0;
+    unsigned long lastIeeeScan = 0;
+    const unsigned long IEEE_SCAN_INTERVAL = 10000;
     unsigned long lastMeshUpdate = 0;
     const unsigned long MESH_DEVICE_SCAN_UPDATE_INTERVAL = 3000;
     unsigned long nextResultsUpdate = millis() + 2000;
@@ -1066,6 +1207,8 @@ void snifferScanTask(void *pv)
         if ((currentScanMode == SCAN_WIFI || currentScanMode == SCAN_BOTH) &&
             (millis() - lastWiFiScan >= WIFI_SCAN_INTERVAL || lastWiFiScan == 0)) {
             lastWiFiScan = millis();
+
+            triggerC5WifiScan();
 
             Serial.println("[SNIFFER] Scanning WiFi networks...");
             int networksFound = WiFi.scanNetworks(false, true, false, rfConfig.wifiChannelTime);
@@ -1135,6 +1278,44 @@ void snifferScanTask(void *pv)
             }
 
             Serial.printf("[SNIFFER] WiFi scan found %d networks\n", networksFound);
+
+            C5WifiAp c5ap;
+            int c5Found = 0;
+            while (c5LinkWifiDrainResult(&c5ap)) {
+                if (c5ap.rssi < rfConfig.globalRssiThreshold) continue;
+                Hit h;
+                String bssid, ssid;
+                c5ApToHit(c5ap, h, bssid, ssid);
+                if (apCache.find(bssid) != apCache.end()) continue;
+                if (apCache.size() < MAX_AP_CACHE) {
+                    apCache[bssid] = ssid;
+                }
+                uniqueMacs.insert(bssid);
+                if (hitsLog.size() < MAX_LOG_SIZE) {
+                    hitsLog.push_back(h);
+                }
+                if (matchesMac(h.mac)) {
+                    totalHits = totalHits + 1;
+                }
+                String logEntry = "WiFi AP (5GHz/C5): " + bssid + " SSID: " + ssid +
+                                  " RSSI: " + String((int)c5ap.rssi) + "dBm CH: " + String((int)c5ap.channel);
+                if (gpsValid) {
+                    if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        logEntry += " GPS: " + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                        xSemaphoreGive(gpsMutex);
+                    }
+                }
+                Serial.println("[SNIFFER] " + logEntry);
+                logToSD(logEntry);
+                uint8_t mac[6];
+                if (parseMac6(bssid, mac) && matchesMac(mac)) {
+                    sendMeshNotification(h);
+                }
+                c5Found++;
+            }
+            if (c5Found > 0) {
+                Serial.printf("[SNIFFER] C5 5GHz drained %d networks\n", c5Found);
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
         }
 
@@ -1142,6 +1323,8 @@ void snifferScanTask(void *pv)
             (millis() - lastBLEScan >= BLE_SCAN_INTERVAL || lastBLEScan == 0))
         {
             lastBLEScan = millis();
+
+            triggerC5BleScan();
 
             Serial.println("[SNIFFER] Scanning BLE devices...");
 
@@ -1241,8 +1424,72 @@ void snifferScanTask(void *pv)
 
                 bleScan->clearResults();
                 Serial.printf("[SNIFFER] BLE scan found %d devices\n", scanResults.getCount());
+
+                // C5 BLE drain — same bleDeviceCache dedup as the loop
+                // above; Coded-PHY + extended-adv records add genuine
+                // coverage on top of the S3's 1M-PHY scan.
+                C5BleAdv c5adv;
+                int c5BleFound = 0;
+                while (c5LinkBleDrainResult(&c5adv)) {
+                    if (c5adv.rssi < rfConfig.globalRssiThreshold) continue;
+                    char macBuf[18];
+                    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                             c5adv.addr[0], c5adv.addr[1], c5adv.addr[2],
+                             c5adv.addr[3], c5adv.addr[4], c5adv.addr[5]);
+                    String macStr(macBuf);
+                    if (bleDeviceCache.find(macStr) != bleDeviceCache.end()) continue;
+
+                    String name = "Unknown";
+                    if (bleDeviceCache.size() < MAX_BLE_CACHE) {
+                        bleDeviceCache[macStr] = name;
+                    }
+                    uniqueMacs.insert(macStr);
+
+                    Hit h;
+                    memcpy(h.mac, c5adv.addr, 6);
+                    h.rssi = c5adv.rssi;
+                    h.ch = 0;
+                    strncpy(h.name, name.c_str(), sizeof(h.name) - 1);
+                    h.name[sizeof(h.name) - 1] = '\0';
+                    h.isBLE = true;
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(h);
+                    }
+
+                    const char *phyTag = (c5adv.primary_phy == 3) ? "Coded" :
+                                         (c5adv.primary_phy == 1) ? "1M" : "?";
+                    String logEntry = String("BLE Device (C5/") + phyTag + "): " + macStr +
+                                      " RSSI: " + String((int)c5adv.rssi) + "dBm";
+                    if (gpsValid) {
+                        if (gpsMutex != nullptr && xSemaphoreTake(gpsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                            logEntry += " GPS: " + String(gpsLat, 6) + "," + String(gpsLon, 6);
+                            xSemaphoreGive(gpsMutex);
+                        }
+                    }
+                    Serial.println("[SNIFFER] " + logEntry);
+                    logToSD(logEntry);
+
+                    if (matchesMac(h.mac)) {
+                        sendMeshNotification(h);
+                        totalHits = totalHits + 1;
+                    }
+                    c5BleFound++;
+                }
+                if (c5BleFound > 0) {
+                    Serial.printf("[SNIFFER] C5 BLE drained %d adverts\n", c5BleFound);
+                }
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
+        }
+
+        // 802.15.4 background sweep: fire-and-drain every IEEE_SCAN_INTERVAL.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        int ieeeFound = drainC5IeeeDetections();
+        if (ieeeFound > 0) {
+            Serial.printf("[SNIFFER] C5 802.15.4 drained %d detections\n", ieeeFound);
         }
 
         if (meshEnabled && millis() - lastMeshUpdate >= MESH_DEVICE_SCAN_UPDATE_INTERVAL && canSendInSlot())
@@ -2978,6 +3225,193 @@ static void sendProbeHitMesh(const uint8_t *mac, int8_t rssi, uint8_t channel,
     }
 }
 
+// Process a single drained ProbeRequestEvent — folds it into the
+// probeDevices map, updates SSID intelligence, fires mesh broadcasts on
+// hits. Shared between the local 2.4 GHz ISR queue and the C5 5 GHz
+// drain so both bands feed the same dedup + hit pipeline.
+static void processProbeRequestEvent(const ProbeRequestEvent &event)
+{
+    // --- Probe Response (stype 5) ---
+    // Maps the responding AP's SSID to the device that sent the probe request
+    if (event.isProbeResponse) {
+        // addr1 = device that probed, extract SSID from probe response IEs (offset 36)
+        char devMacStr[18];
+        snprintf(devMacStr, sizeof(devMacStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 event.addr1[0], event.addr1[1], event.addr1[2],
+                 event.addr1[3], event.addr1[4], event.addr1[5]);
+
+        char apBssid[18];
+        snprintf(apBssid, sizeof(apBssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 event.addr3[0], event.addr3[1], event.addr3[2],
+                 event.addr3[3], event.addr3[4], event.addr3[5]);
+
+        char respSsid[33] = {0};
+        extractSsidFromIE(event.payload, event.payloadLen, 36, respSsid, sizeof(respSsid));
+
+        std::lock_guard<std::mutex> lock(probeMutex);
+        auto it = probeDevices.find(String(devMacStr));
+        if (it != probeDevices.end()) {
+            ProbeDevice &dev = it->second;
+            strncpy(dev.respondingAP, apBssid, 17);
+            dev.respondingAP[17] = '\0';
+            if (respSsid[0]) {
+                strncpy(dev.respondingSSID, respSsid, 32);
+                dev.respondingSSID[32] = '\0';
+                addProbeSsid(dev, respSsid);
+                uniqueSsids.insert(String(respSsid));
+                respondedSsids.insert(String(respSsid));
+            }
+        }
+        return;
+    }
+
+    totalProbeCount++;
+
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             event.mac[0], event.mac[1], event.mac[2],
+             event.mac[3], event.mac[4], event.mac[5]);
+
+    // dst events are unfiltered unicast from ISR — verify target here
+    if (event.dstMatch) {
+        if (!matchesMac(event.mac)) return;
+    }
+
+    char ssidBuf[33] = {0};
+    bool hasSSID = false;
+    if (!event.dstMatch) {
+        hasSSID = extractSsidFromProbe(event.payload, event.payloadLen, ssidBuf, sizeof(ssidBuf));
+    }
+
+    bool macHit = matchesMac(event.mac);
+    bool ssidHit = hasSSID && matchesSsid(ssidBuf);
+    bool dstHit = event.dstMatch;
+    bool isHit = macHit || ssidHit || dstHit;
+
+    bool randomized = (event.mac[0] & 0x02) && !(event.mac[0] & 0x01);
+    const char *vendor = nullptr;
+    if (!randomized) {
+        vendor = lookupOuiVendor(event.mac);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(probeMutex);
+
+        if (hasSSID && ssidBuf[0]) {
+            uniqueSsids.insert(String(ssidBuf));
+        }
+
+        auto it = probeDevices.find(String(macStr));
+        if (it != probeDevices.end()) {
+            ProbeDevice &dev = it->second;
+            dev.rssi = event.rssi;
+            if (event.rssi < dev.rssiMin) dev.rssiMin = event.rssi;
+            if (event.rssi > dev.rssiMax) dev.rssiMax = event.rssi;
+            dev.channel = event.channel;
+            dev.lastSeen = millis();
+            dev.probeCount++;
+            if (hasSSID) addProbeSsid(dev, ssidBuf);
+            if (isHit && !dev.isTargetHit) {
+                dev.isTargetHit = true;
+                probeHitCount++;
+            }
+            if (dstHit) dev.isDstHit = true;
+        } else {
+            if (probeDevices.size() >= 100) {
+                uint32_t oldestTime = UINT32_MAX;
+                String oldestKey;
+                for (const auto &p : probeDevices) {
+                    if (!p.second.isTargetHit && p.second.lastSeen < oldestTime) {
+                        oldestTime = p.second.lastSeen;
+                        oldestKey = p.first;
+                    }
+                }
+                if (oldestKey.length() > 0) probeDevices.erase(oldestKey);
+            }
+
+            ProbeDevice dev = {};
+            memcpy(dev.mac, event.mac, 6);
+            dev.rssi = event.rssi;
+            dev.rssiMin = event.rssi;
+            dev.rssiMax = event.rssi;
+            dev.channel = event.channel;
+            dev.firstSeen = millis();
+            dev.lastSeen = millis();
+            dev.probeCount = 1;
+            dev.ssidCount = 0;
+            dev.isRandomized = randomized;
+            dev.isTargetHit = isHit;
+            dev.isDstHit = dstHit;
+            dev.respondingAP[0] = '\0';
+            dev.respondingSSID[0] = '\0';
+
+            // Annotate with SD database history
+            ProbeDBEntry hist;
+            if (lookupProbeHistory(macStr, hist)) {
+                dev.histKnown = true;
+                dev.histTotalSeen = hist.totalSeen;
+                dev.histFirstEpoch = hist.firstEpoch;
+                dev.histLastEpoch = hist.lastEpoch;
+                dev.histSessionCount = hist.sessionCount;
+            } else {
+                dev.histKnown = false;
+                dev.histTotalSeen = 0;
+                dev.histFirstEpoch = 0;
+                dev.histLastEpoch = 0;
+                dev.histSessionCount = 0;
+            }
+
+            if (vendor) {
+                strncpy(dev.vendor, vendor, sizeof(dev.vendor) - 1);
+                dev.vendor[sizeof(dev.vendor) - 1] = '\0';
+            } else {
+                dev.vendor[0] = '\0';
+            }
+
+            if (ssidHit) strncpy(dev.hitReason, "SSID", sizeof(dev.hitReason));
+            else if (dstHit) strncpy(dev.hitReason, "DST", sizeof(dev.hitReason));
+            else if (macHit) strncpy(dev.hitReason, "MAC", sizeof(dev.hitReason));
+            else dev.hitReason[0] = '\0';
+
+            if (hasSSID) addProbeSsid(dev, ssidBuf);
+            probeDevices[String(macStr)] = dev;
+            if (isHit) probeHitCount++;
+        }
+    }
+
+    if (isHit || probeBroadcastAll.load()) {
+        bool ghostSsid = hasSSID && ssidBuf[0] &&
+                         respondedSsids.find(String(ssidBuf)) == respondedSsids.end();
+        sendProbeHitMesh(event.mac, event.rssi, event.channel, ssidBuf, vendor, dstHit, ghostSsid);
+    }
+}
+
+// Drain whatever 5 GHz probe events the C5 has queued and feed them
+// through the same per-event pipeline as the local 2.4 GHz ISR queue.
+// Translation step lifts wire-format src_mac/dst_mac/bssid into the
+// existing ProbeRequestEvent mac/addr1/addr3 layout.
+static int drainC5WifiProbes() {
+    C5WifiProbeEvent c5evt;
+    int count = 0;
+    while (c5LinkWifiProbeDrainResult(&c5evt)) {
+        ProbeRequestEvent ev = {};
+        memcpy(ev.mac, c5evt.src_mac, 6);
+        ev.rssi    = c5evt.rssi;
+        ev.channel = c5evt.channel;
+        ev.payloadLen = c5evt.payload_len > sizeof(ev.payload)
+                            ? sizeof(ev.payload)
+                            : c5evt.payload_len;
+        memcpy(ev.payload, c5evt.payload, ev.payloadLen);
+        ev.dstMatch       = false;
+        ev.isProbeResponse = (c5evt.is_response != 0);
+        memcpy(ev.addr1, c5evt.dst_mac, 6);
+        memcpy(ev.addr3, c5evt.bssid,   6);
+        processProbeRequestEvent(ev);
+        count++;
+    }
+    return count;
+}
+
 void probeDetectionTask(void *pv)
 {
     int duration = static_cast<int>(reinterpret_cast<intptr_t>(pv));
@@ -3025,6 +3459,10 @@ void probeDetectionTask(void *pv)
     uint32_t startTime = millis();
     uint32_t nextResultsUpdate = startTime;
     uint32_t lastBLEScan = 0;
+    uint32_t lastIeeeScan = 0;
+    uint32_t lastC5ProbeSniff = 0;
+    const uint32_t IEEE_SCAN_INTERVAL = 10000;
+    const uint32_t C5_PROBE_SNIFF_INTERVAL = 10000;  // 9 s window + 1 s gap
     uint32_t lastDBSave = startTime;
     uint32_t lastDebug = startTime;
     uint32_t totalDrained = 0;
@@ -3039,160 +3477,7 @@ void probeDetectionTask(void *pv)
         while (xQueueReceive(probeRequestQueue, &event, 0) == pdTRUE && processedCount < 60) {
             totalDrained++;
             processedCount++;
-
-            // --- Probe Response (stype 5) ---
-            // Maps the responding AP's SSID to the device that sent the probe request
-            if (event.isProbeResponse) {
-                // addr1 = device that probed, extract SSID from probe response IEs (offset 36)
-                char devMacStr[18];
-                snprintf(devMacStr, sizeof(devMacStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         event.addr1[0], event.addr1[1], event.addr1[2],
-                         event.addr1[3], event.addr1[4], event.addr1[5]);
-
-                char apBssid[18];
-                snprintf(apBssid, sizeof(apBssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         event.addr3[0], event.addr3[1], event.addr3[2],
-                         event.addr3[3], event.addr3[4], event.addr3[5]);
-
-                char respSsid[33] = {0};
-                extractSsidFromIE(event.payload, event.payloadLen, 36, respSsid, sizeof(respSsid));
-
-                std::lock_guard<std::mutex> lock(probeMutex);
-                auto it = probeDevices.find(String(devMacStr));
-                if (it != probeDevices.end()) {
-                    ProbeDevice &dev = it->second;
-                    strncpy(dev.respondingAP, apBssid, 17);
-                    dev.respondingAP[17] = '\0';
-                    if (respSsid[0]) {
-                        strncpy(dev.respondingSSID, respSsid, 32);
-                        dev.respondingSSID[32] = '\0';
-                        addProbeSsid(dev, respSsid);
-                        uniqueSsids.insert(String(respSsid));
-                        respondedSsids.insert(String(respSsid));
-                    }
-                }
-                continue;
-            }
-
-            totalProbeCount++;
-
-            char macStr[18];
-            snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     event.mac[0], event.mac[1], event.mac[2],
-                     event.mac[3], event.mac[4], event.mac[5]);
-
-            // dst events are unfiltered unicast from ISR — verify target here
-            if (event.dstMatch) {
-                if (!matchesMac(event.mac)) continue;
-            }
-
-            char ssidBuf[33] = {0};
-            bool hasSSID = false;
-            if (!event.dstMatch) {
-                hasSSID = extractSsidFromProbe(event.payload, event.payloadLen, ssidBuf, sizeof(ssidBuf));
-            }
-
-            bool macHit = matchesMac(event.mac);
-            bool ssidHit = hasSSID && matchesSsid(ssidBuf);
-            bool dstHit = event.dstMatch;
-            bool isHit = macHit || ssidHit || dstHit;
-
-            bool randomized = (event.mac[0] & 0x02) && !(event.mac[0] & 0x01);
-            const char *vendor = nullptr;
-            if (!randomized) {
-                vendor = lookupOuiVendor(event.mac);
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(probeMutex);
-
-                if (hasSSID && ssidBuf[0]) {
-                    uniqueSsids.insert(String(ssidBuf));
-                }
-
-                auto it = probeDevices.find(String(macStr));
-                if (it != probeDevices.end()) {
-                    ProbeDevice &dev = it->second;
-                    dev.rssi = event.rssi;
-                    if (event.rssi < dev.rssiMin) dev.rssiMin = event.rssi;
-                    if (event.rssi > dev.rssiMax) dev.rssiMax = event.rssi;
-                    dev.channel = event.channel;
-                    dev.lastSeen = millis();
-                    dev.probeCount++;
-                    if (hasSSID) addProbeSsid(dev, ssidBuf);
-                    if (isHit && !dev.isTargetHit) {
-                        dev.isTargetHit = true;
-                        probeHitCount++;
-                    }
-                    if (dstHit) dev.isDstHit = true;
-                } else {
-                    if (probeDevices.size() >= 100) {
-                        uint32_t oldestTime = UINT32_MAX;
-                        String oldestKey;
-                        for (const auto &p : probeDevices) {
-                            if (!p.second.isTargetHit && p.second.lastSeen < oldestTime) {
-                                oldestTime = p.second.lastSeen;
-                                oldestKey = p.first;
-                            }
-                        }
-                        if (oldestKey.length() > 0) probeDevices.erase(oldestKey);
-                    }
-
-                    ProbeDevice dev = {};
-                    memcpy(dev.mac, event.mac, 6);
-                    dev.rssi = event.rssi;
-                    dev.rssiMin = event.rssi;
-                    dev.rssiMax = event.rssi;
-                    dev.channel = event.channel;
-                    dev.firstSeen = millis();
-                    dev.lastSeen = millis();
-                    dev.probeCount = 1;
-                    dev.ssidCount = 0;
-                    dev.isRandomized = randomized;
-                    dev.isTargetHit = isHit;
-                    dev.isDstHit = dstHit;
-                    dev.respondingAP[0] = '\0';
-                    dev.respondingSSID[0] = '\0';
-
-                    // Annotate with SD database history
-                    ProbeDBEntry hist;
-                    if (lookupProbeHistory(macStr, hist)) {
-                        dev.histKnown = true;
-                        dev.histTotalSeen = hist.totalSeen;
-                        dev.histFirstEpoch = hist.firstEpoch;
-                        dev.histLastEpoch = hist.lastEpoch;
-                        dev.histSessionCount = hist.sessionCount;
-                    } else {
-                        dev.histKnown = false;
-                        dev.histTotalSeen = 0;
-                        dev.histFirstEpoch = 0;
-                        dev.histLastEpoch = 0;
-                        dev.histSessionCount = 0;
-                    }
-
-                    if (vendor) {
-                        strncpy(dev.vendor, vendor, sizeof(dev.vendor) - 1);
-                        dev.vendor[sizeof(dev.vendor) - 1] = '\0';
-                    } else {
-                        dev.vendor[0] = '\0';
-                    }
-
-                    if (ssidHit) strncpy(dev.hitReason, "SSID", sizeof(dev.hitReason));
-                    else if (dstHit) strncpy(dev.hitReason, "DST", sizeof(dev.hitReason));
-                    else if (macHit) strncpy(dev.hitReason, "MAC", sizeof(dev.hitReason));
-                    else dev.hitReason[0] = '\0';
-
-                    if (hasSSID) addProbeSsid(dev, ssidBuf);
-                    probeDevices[String(macStr)] = dev;
-                    if (isHit) probeHitCount++;
-                }
-            }
-
-            if (isHit || probeBroadcastAll.load()) {
-                bool ghostSsid = hasSSID && ssidBuf[0] &&
-                                 respondedSsids.find(String(ssidBuf)) == respondedSsids.end();
-                sendProbeHitMesh(event.mac, event.rssi, event.channel, ssidBuf, vendor, dstHit, ghostSsid);
-            }
+            processProbeRequestEvent(event);
         }
 
         if ((int32_t)(millis() - nextResultsUpdate) >= 0) {
@@ -3265,6 +3550,25 @@ void probeDetectionTask(void *pv)
                           totalDrained, (uint32_t)qWaiting,
                           probeDevices.size(), (uint32_t)totalProbeCount);
             lastDebug = millis();
+        }
+
+        // 802.15.4 background sweep alongside probe detection.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        drainC5IeeeDetections();
+
+        // C5 5 GHz probe sniff — re-arm every 10 s while Wi-Fi capture is
+        // active. The C5 mutexes its scan + sniff tasks so a concurrent
+        // SCAN_REQ during the sniff window returns BUSY (the S3 isn't
+        // issuing one in probe mode anyway, but stay defensive).
+        if (currentScanMode == SCAN_WIFI || currentScanMode == SCAN_BOTH) {
+            if ((millis() - lastC5ProbeSniff) >= C5_PROBE_SNIFF_INTERVAL || lastC5ProbeSniff == 0) {
+                triggerC5WifiProbeSniff();
+                lastC5ProbeSniff = millis();
+            }
+            drainC5WifiProbes();
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -3930,7 +4234,7 @@ void listScanTask(void *pv) {
                     selfNode.lat = 0.0;
                     selfNode.lon = 0.0;
                 }
-                selfNode.hdop = gpsValid && gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
+                selfNode.hdop = gpsValid ? gpsHDOP : 99.9f;
                 selfNode.rssi = -128;
                 selfNode.hitCount = 0;
                 selfNode.hasGPS = gpsValid;
@@ -3969,6 +4273,8 @@ void listScanTask(void *pv) {
     const uint32_t LOCAL_DEDUPE_WINDOW = 3000;
     uint32_t lastWiFiScan = 0;
     uint32_t lastBLEScan = 0;
+    uint32_t lastIeeeScan = 0;
+    const uint32_t IEEE_SCAN_INTERVAL = 10000;
     Hit h;
 
     uint32_t nextTriResultsUpdate = millis() + 2000;
@@ -3988,6 +4294,7 @@ void listScanTask(void *pv) {
         if ((currentScanMode == SCAN_WIFI || currentScanMode == SCAN_BOTH) &&
             (millis() - lastWiFiScan >= WIFI_SCAN_INTERVAL || lastWiFiScan == 0)) {
             lastWiFiScan = millis();
+            triggerC5WifiScan();
             int networksFound = WiFi.scanNetworks(false, true, false, rfConfig.wifiChannelTime);
             if (stopRequested) break;
             if (networksFound > 0) {
@@ -4054,6 +4361,48 @@ void listScanTask(void *pv) {
                 WiFi.scanDelete();
             }
             framesSeen += networksFound;
+
+            // Drain C5 5 GHz mirror results. Mirrors the local-dedup +
+            // triangulation-aware logic above.
+            C5WifiAp c5ap;
+            while (c5LinkWifiDrainResult(&c5ap)) {
+                if (!triangulationActive && c5ap.rssi < rfConfig.globalRssiThreshold) continue;
+                Hit wh;
+                String bssidStr, ssidStr;
+                c5ApToHit(c5ap, wh, bssidStr, ssidStr);
+
+                uint32_t now = millis();
+                bool shouldProcess = (localDeviceLastSeen.find(bssidStr) == localDeviceLastSeen.end() ||
+                                      (now - localDeviceLastSeen[bssidStr] >= LOCAL_DEDUPE_WINDOW));
+                if (!shouldProcess) continue;
+
+                bool isMatch;
+                if (triangulationActive) {
+                    if (strlen(triangulationTargetIdentity) > 0) {
+                        isMatch = matchesIdentityMac(triangulationTargetIdentity, wh.mac);
+                    } else {
+                        isMatch = (memcmp(wh.mac, triangulationTarget, 6) == 0);
+                    }
+                } else {
+                    isMatch = matchesMac(wh.mac);
+                    if (!isMatch && ssidStr.length() > 0) {
+                        isMatch = matchesSsid(ssidStr.c_str());
+                    }
+                }
+
+                uniqueMacs.insert(bssidStr);
+                if (isMatch) {
+                    if (!safeMacQueueSend(&wh, pdMS_TO_TICKS(10))) {
+                        Serial.printf("[SCAN] Queue full for C5 5GHz target %s\n", bssidStr.c_str());
+                    }
+                } else {
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(wh);
+                    }
+                    localDeviceLastSeen[bssidStr] = now;
+                }
+                framesSeen++;
+            }
         }
 
         extern void processUSBToMesh();
@@ -4062,6 +4411,7 @@ void listScanTask(void *pv) {
         if ((currentScanMode == SCAN_BLE || currentScanMode == SCAN_BOTH) && pBLEScan &&
             (millis() - lastBLEScan >= rfConfig.bleScanInterval || lastBLEScan == 0)) {
             lastBLEScan = millis();
+            triggerC5BleScan();
             NimBLEScanResults scanResults = pBLEScan->getResults(500, false);
             if (stopRequested) break;
             for (int i = 0; i < scanResults.getCount(); i++) {
@@ -4148,7 +4498,72 @@ void listScanTask(void *pv) {
             }
             pBLEScan->clearResults();
             bleFramesSeen += scanResults.getCount();
+
+            // Drain C5 BLE adverts via the local-dedup + target-match
+            // logic mirroring the S3-side loop above. matchesBleFingerprint
+            // isn't applied because it needs a NimBLEAdvertisedDevice;
+            // those targets still trip on the S3-side onResult callback.
+            C5BleAdv c5adv;
+            while (c5LinkBleDrainResult(&c5adv)) {
+                if (!triangulationActive && c5adv.rssi < rfConfig.globalRssiThreshold) continue;
+
+                char macBuf[18];
+                snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         c5adv.addr[0], c5adv.addr[1], c5adv.addr[2],
+                         c5adv.addr[3], c5adv.addr[4], c5adv.addr[5]);
+                String macStr(macBuf);
+
+                uint32_t now = millis();
+                bool shouldProcess = (localDeviceLastSeen.find(macStr) == localDeviceLastSeen.end() ||
+                                      (now - localDeviceLastSeen[macStr] >= LOCAL_DEDUPE_WINDOW));
+                if (!shouldProcess) continue;
+
+                uint8_t mac[6];
+                memcpy(mac, c5adv.addr, 6);
+                bool isMatch;
+                if (triangulationActive) {
+                    if (strlen(triangulationTargetIdentity) > 0) {
+                        isMatch = matchesIdentityMac(triangulationTargetIdentity, mac);
+                    } else {
+                        isMatch = (memcmp(mac, triangulationTarget, 6) == 0);
+                    }
+                } else {
+                    isMatch = matchesMac(mac);
+                }
+
+                uniqueMacs.insert(macStr);
+
+                Hit bh;
+                memcpy(bh.mac, mac, 6);
+                bh.rssi = c5adv.rssi;
+                bh.ch = 0;
+                strncpy(bh.name, "Unknown", sizeof(bh.name) - 1);
+                bh.name[sizeof(bh.name) - 1] = '\0';
+                bh.isBLE = true;
+
+                if (isMatch) {
+                    if (!safeMacQueueSend(&bh, pdMS_TO_TICKS(10))) {
+                        Serial.printf("[SCAN] Queue full for C5 BLE target %s\n", macStr.c_str());
+                    }
+                } else {
+                    if (hitsLog.size() < MAX_LOG_SIZE) {
+                        hitsLog.push_back(bh);
+                    }
+                    localDeviceLastSeen[macStr] = now;
+                }
+                bleFramesSeen++;
+            }
         }
+
+        // 802.15.4 background sweep — fire and drain. Detections aren't
+        // matched against the WiFi/BLE target lists yet (EUI-64 addresses
+        // don't fit the 6-byte matchers); they get logged to SD and the
+        // serial console for diagnostic / cloud-side analysis.
+        if ((millis() - lastIeeeScan) >= IEEE_SCAN_INTERVAL || lastIeeeScan == 0) {
+            triggerC5IeeeScan();
+            lastIeeeScan = millis();
+        }
+        drainC5IeeeDetections();
 
         while (safeMacQueueReceive(&h, 0)) {
             String macStrOrig = macFmt6(h.mac);
@@ -4250,7 +4665,7 @@ void listScanTask(void *pv) {
                                 triAccum.lat = 0.0;
                                 triAccum.lon = 0.0;
                             }
-                            triAccum.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
+                            triAccum.hdop = gpsHDOP;
                             triAccum.hasGPS = true;
                         }
 

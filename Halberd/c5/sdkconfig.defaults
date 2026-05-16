@@ -1,0 +1,52 @@
+# Halberd C5 firmware sdkconfig defaults.
+# These seed `sdkconfig` on first build. Edit via `idf.py menuconfig` to tweak;
+# committing changes back here keeps the build reproducible across machines.
+
+CONFIG_IDF_TARGET="esp32c5"
+
+# Console on the USB Serial/JTAG controller. UART0 (GPIO11/12) is dedicated to
+# the S3 link, so we keep the boot ROM + ESP_LOG output on USB instead. Plug
+# the C5's USB-C port in and it enumerates as /dev/ttyACMx for monitoring.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Verbose enough to confirm bring-up, not so chatty that we drown the link
+# later. Bump to DEBUG with `idf.py menuconfig` when debugging.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Generic compile-time hardening that doesn't cost us anything.
+CONFIG_COMPILER_WARN_WRITE_STRINGS=y
+CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+
+# Custom partition table — see partitions.csv. The default single-app
+# layout caps the factory partition at 1 MB; we need ~3 MB to fit all the
+# radios we plan to enable (Wi-Fi 5 GHz, BLE 5, IEEE 802.15.4).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The Seeed XIAO ESP32-C5 ships with 4 MB of flash; ESP-IDF defaults to
+# 2 MB for the C5 target. Bump to 4 MB so partitions.csv's 3 MB factory
+# partition has room.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ── IEEE 802.15.4 (stage 6) ────────────────────────────────────────────────
+# The ESP32-C5 has a hardware 802.15.4 PHY at 2.4 GHz. Enabling it pulls
+# in the radio control component but no upper-layer stack (we run pure
+# promiscuous sniffer, not Thread / Zigbee host).
+CONFIG_IEEE802154_ENABLED=y
+
+# ── BLE (stage 5) ──────────────────────────────────────────────────────────
+# Use NimBLE host stack — BLE 5 features (Coded PHY, extended adv, 2M)
+# matter for what the C5 adds over the S3's NimBLE-Arduino scan.
+# Observer role only: we scan, we never advertise / connect / serve GATT,
+# so peripheral / central / broadcaster roles stay off to save flash and
+# RAM.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+CONFIG_BT_NIMBLE_EXT_ADV=y

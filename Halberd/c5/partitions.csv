@@ -1,0 +1,13 @@
+# Halberd C5 partition table.
+#
+# The Seeed XIAO ESP32-C5 has 4 MB of flash. The default ESP-IDF single-app
+# table caps the app partition at 1 MB, which the stage 4 Wi-Fi build
+# already fills to 89%. Stages 5 (BLE) and 6 (802.15.4) will overflow it.
+# We bump the factory partition to 3 MB so all four upcoming radios fit
+# with comfortable headroom, and we keep ~500 KB of unallocated tail for
+# a future SPIFFS / NVS-data partition if we ever need on-device storage.
+#
+# Name,   Type, SubType, Offset,   Size,    Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  3M,

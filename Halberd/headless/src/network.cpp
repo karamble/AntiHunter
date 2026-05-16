@@ -4,7 +4,9 @@
 #include "hardware.h"
 #include "scanner.h"
 #include "main.h"
+#include "c5_link.h"
 #include <RTClib.h>
+#include <Wire.h>
 #include <algorithm>
 #include <esp_timer.h>
 
@@ -683,6 +685,94 @@ static void handleSetTime(const String &command)
   }
 }
 
+// handleI2cScan probes every 7-bit I²C address on the S3's onboard bus
+// (RTC_SDA / RTC_SCL) and reports the responders. Bench-only diagnostic
+// for verifying the DS3231 + UPS branch on the v5 carrier.
+static void handleI2cScan(const String &command)
+{
+  (void)command;
+  Serial.printf("[I2C] Scan starting on SDA:%d SCL:%d\n", RTC_SDA_PIN, RTC_SCL_PIN);
+
+  bool tookMutex = false;
+  if (rtcMutex != nullptr &&
+      xSemaphoreTake(rtcMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+    tookMutex = true;
+  }
+
+  // Re-init at 100 kHz so a heavily-pulled bus or paralleled pulls have the
+  // slack to ACK cleanly. The DS3231 path already begins Wire on boot, but
+  // re-initing is harmless and covers the case where initializeRTC()
+  // returned early before Wire.begin (mutex create failure).
+  Wire.end();
+  delay(20);
+  Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN, 100000);
+  delay(20);
+
+  int found = 0;
+  String foundList;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+      const char *hint = "";
+      if (addr == 0x40) hint = " (INA219 candidate)";
+      else if (addr == 0x68) hint = " (DS3231 candidate)";
+      Serial.printf("[I2C] Found 0x%02X%s\n", addr, hint);
+      if (foundList.length() > 0) foundList += ",";
+      char buf[6];
+      snprintf(buf, sizeof(buf), "0x%02X", addr);
+      foundList += buf;
+      found++;
+    }
+  }
+
+  Serial.printf("[I2C] Scan done: %d device(s)\n", found);
+  String summary = nodeId + ": I2C_SCAN: " +
+                   (found == 0 ? String("empty") : foundList) +
+                   " (" + String(found) + ")";
+  sendToSerial1(summary, true);
+
+  if (tookMutex) xSemaphoreGive(rtcMutex);
+}
+
+// handleC5I2cScan probes every 7-bit I²C address on the C5's expansion
+// bus (EXP_SDA / EXP_SCL on the J_EXP / J_QWIIC connectors) via the
+// LINK_MSG_I2C_READ_REQ path. Uses a zero-length read as an address
+// probe — status 0 (OK) means the device ACKed.
+//
+// Stage 7 bench-validation: with a Grove Vision AI V2 wired to J_EXP,
+// 0x62 should appear in the output. Any other plugged-in Qwiic /
+// STEMMA QT module will show up at its catalogued address too.
+static void handleC5I2cScan(const String &command)
+{
+  (void)command;
+  Serial.println("[C5_I2C] Scan starting on C5 expansion bus...");
+
+  int found = 0;
+  String foundList;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    // Zero-length read = address-only ACK probe. reg_addr = -1 means
+    // no register write before the read, so it's a pure address probe.
+    int rc = c5LinkI2cRead(addr, /*reg_addr=*/-1, NULL, 0, 200);
+    if (rc == 0) {
+      const char *hint = "";
+      if (addr == 0x62) hint = " (Grove Vision AI V2 candidate)";
+      Serial.printf("[C5_I2C] Found 0x%02X%s\n", addr, hint);
+      if (foundList.length() > 0) foundList += ",";
+      char buf[6];
+      snprintf(buf, sizeof(buf), "0x%02X", addr);
+      foundList += buf;
+      found++;
+    }
+  }
+
+  Serial.printf("[C5_I2C] Scan done: %d device(s)\n", found);
+  String summary = nodeId + ": C5_I2C_SCAN: " +
+                   (found == 0 ? String("empty") : foundList) +
+                   " (" + String(found) + ")";
+  sendToSerial1(summary, true);
+}
+
 static void handleStatus(const String &command)
 {
   float esp_temp = temperatureRead();
@@ -702,10 +792,9 @@ static void handleStatus(const String &command)
                       (int)uptime_hours, (int)(uptime_mins % 60), (int)(uptime_secs % 60));
   if (gpsValid && written > 0 && written <= sizeof(status_msg) - 1)
   {
-      float hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
       snprintf(status_msg + written, sizeof(status_msg) - written,
               " GPS:%.6f,%.6f HDOP=%.1f",
-              gpsLat, gpsLon, hdop);
+              gpsLat, gpsLon, gpsHDOP);
   }
   sendToSerial1(String(status_msg), true);
 }
@@ -1113,9 +1202,7 @@ static void handleTriangulateStop(const String &command)
                           " Type:WiFi";  // Default to WiFi type for 0-hit reports
           if (gpsValid) {
               noHitMsg += " GPS=" + String(gpsLat, 6) + "," + String(gpsLon, 6);
-              if (gps.hdop.isValid()) {
-                  noHitMsg += " HDOP=" + String(gps.hdop.hdop(), 1);
-              }
+              noHitMsg += " HDOP=" + String(gpsHDOP, 1);
           }
           sendToSerial1(noHitMsg, true);
           Serial.println("[TRIANGULATE] Final 0-hit report sent (no detections)");
@@ -1401,6 +1488,8 @@ void processCommand(const String &command, const String &targetId = "")
   else if (command == "PROBE_STOP")                   handleProbeStop(command);
   else if (command.startsWith("STOP"))                handleStop(command);
   else if (command.startsWith("SETTIME:"))            handleSetTime(command);
+  else if (command == "I2C_SCAN")                     handleI2cScan(command);
+  else if (command == "C5_I2C_SCAN")                  handleC5I2cScan(command);
   else if (command.startsWith("STATUS"))              handleStatus(command);
   else if (command.startsWith("VIBRATION_STATUS"))    handleVibrationStatus(command);
   else if (command == "VIBRATION_ON")                 handleVibrationOn(command);

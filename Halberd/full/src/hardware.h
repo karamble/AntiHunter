@@ -3,7 +3,6 @@
 #include "network.h"
 #include "main.h"
 #include <RTClib.h>
-#include <TinyGPSPlus.h>
 #include <FS.h>
 #include <SD.h>
 
@@ -26,9 +25,20 @@
 #define SD_MISO_PIN 8    // MISO on D9
 #define SD_MOSI_PIN 9    // MOSI on D10
 
-// GPS (UART)
+// GPS (UART) — v4 only. On v5 these pins are repurposed as the C5 link UART
+// (see below); the GPS is reached indirectly via the C5. Stage 3 of the
+// feat/c5-firmware branch will remove the GPS owner from the S3.
 #define GPS_RX_PIN 44   // GPS RX
 #define GPS_TX_PIN 43   // GPS TX
+
+// C5 link UART (v5). Same physical pins as the v4 GPS UART above — the v5
+// carrier reuses them. Names are written from the S3's perspective:
+//   C5_LINK_TX_PIN = S3 transmits → C5 RX  (net C5_LINK_TX on the schematic)
+//   C5_LINK_RX_PIN = S3 receives ← C5 TX  (net C5_LINK_RX on the schematic)
+// See hw/pcb/docs/schematic.md for the netlist and hw/pcb/docs/kicad-tutorial-v5.md
+// Appendix B for the C5-side pinout.
+#define C5_LINK_TX_PIN 43
+#define C5_LINK_RX_PIN 44
 
 // RTC (I2C)
 #define RTC_SDA_PIN 3    // RTC SDA
@@ -77,14 +87,26 @@ uint32_t getEventTimestamp();
 bool setRTCTime(int year, int month, int day, int hour, int minute, int second);
 bool setRTCTimeFromEpoch(time_t epoch);
 
-// Sensors and GPS
+// Sensors and GPS.
+//
+// On v5 the GPS module lives on the C5; the S3 receives parsed fixes over
+// the c5_link UART (see Halberd/shared/link_protocol.h struct link_gps_fix).
+// These globals are the post-handover replacement for the v4 TinyGPSPlus
+// object accessors — every field that used to come from `gps.<thing>` is
+// now mirrored as a typed global, updated by the c5_link GPS_FIX handler.
 extern bool sdAvailable;
 extern bool gpsValid;
 extern float gpsLat, gpsLon;
 extern SemaphoreHandle_t gpsMutex;
 extern String lastGPSData;
-extern HardwareSerial GPS;
-extern TinyGPSPlus gps;
+extern uint8_t gpsSatellites;
+extern float   gpsHDOP;          // 99.9 when no fix
+extern int     gpsAltitudeM;
+extern uint16_t gpsYear;
+extern uint8_t  gpsMonth, gpsDay, gpsHour, gpsMinute, gpsSecond, gpsCentisecond;
+extern bool gpsDateValid;
+extern bool gpsTimeValid;
+extern uint32_t gpsLastFixMs;    // millis() of most recent GPS_FIX frame, 0 if none
 extern volatile bool vibrationDetected;
 extern unsigned long lastVibrationTime;
 extern unsigned long lastVibrationAlert;
