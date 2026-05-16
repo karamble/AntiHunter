@@ -40,9 +40,13 @@
 #define C5_LINK_TX_PIN 43
 #define C5_LINK_RX_PIN 44
 
-// RTC (I2C)
-#define RTC_SDA_PIN 3    // RTC SDA
-#define RTC_SCL_PIN 6    // RTC SCL
+// RTC + UPS (shared I2C bus)
+#define RTC_SDA_PIN 3    // RTC SDA (also UPS INA219 SDA via J_UPS.3)
+#define RTC_SCL_PIN 6    // RTC SCL (also UPS INA219 SCL via J_UPS.4)
+
+// Waveshare UPS Module 3S onboard INA219. A0 strap pulled high on
+// Waveshare's PCB shifts the chip from default 0x40 → 0x41.
+#define INA219_I2C_ADDR 0x41
 
 // Configuration constants
 #define CONFIG_FILE "/config.json"
@@ -86,6 +90,20 @@ time_t getRTCEpoch();
 uint32_t getEventTimestamp();
 bool setRTCTime(int year, int month, int day, int hour, int minute, int second);
 bool setRTCTimeFromEpoch(time_t epoch);
+
+// UPS battery monitor — Waveshare 3S Li-ion pack via INA219 on the same
+// S3 I2C bus as the DS3231. Calibration constants ported from the
+// known-good gotailme reader (internal/battery/{ina219.go,monitor.go}).
+// All access serialised through rtcMutex because the bus is shared.
+extern bool  inaAvailable;       // true once initializeINA219() handshake succeeds
+extern float inaLastVoltage;     // bus volts (battery pack voltage, 0..16 V range)
+extern float inaLastCurrentMa;   // milliamps, signed (+ = charging, - = discharging)
+extern float inaLastPct;         // 0..100 mapped from 9.0..12.6 V (3S Li-ion)
+extern bool  inaLastCharging;    // mirror of (inaLastCurrentMa > 0)
+
+void   initializeINA219();
+bool   readINA219();             // refreshes ina* globals; returns true on success
+String getBatteryStatusString(); // "11.92V 81% CHG" / "--" when unavailable
 
 // Sensors and GPS.
 //

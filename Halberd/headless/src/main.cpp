@@ -193,6 +193,10 @@ void setup() {
     delay(1000);
     initializeRTC();
     delay(500);
+    // Same shared bus as the RTC (S3 GPIO 3/6, via J_UPS) — must come after
+    // initializeRTC() so Wire is up and rtcMutex exists.
+    initializeINA219();
+    delay(100);
     initializeVibrationSensor();
     initializeScanner();
     

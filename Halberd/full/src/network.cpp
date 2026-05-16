@@ -6473,9 +6473,20 @@ static void handleStatus(const String &command)
                         (int)uptime_hours, (int)(uptime_mins % 60), (int)(uptime_secs % 60));
   if (gpsValid && written > 0 && written <= sizeof(status_msg) - 1)
   {
-    snprintf(status_msg + written, sizeof(status_msg) - written,
-            " GPS:%.6f,%.6f HDOP=%.1f",
-            gpsLat, gpsLon, gpsHDOP);
+    int n = snprintf(status_msg + written, sizeof(status_msg) - written,
+                     " GPS:%.6f,%.6f HDOP=%.1f",
+                     gpsLat, gpsLon, gpsHDOP);
+    if (n > 0) written += n;
+  }
+  // Refresh + append battery line. Cheap (~3 ms over the 100 kHz bus); the
+  // INA219 is on the same I²C wire as the DS3231 so reads serialise via
+  // rtcMutex inside readINA219().
+  if (inaAvailable && written > 0 && written <= (int)sizeof(status_msg) - 1) {
+      readINA219();
+      snprintf(status_msg + written, sizeof(status_msg) - written,
+               " Bat:%s", getBatteryStatusString().c_str());
+  } else if (written > 0 && written <= (int)sizeof(status_msg) - 1) {
+      snprintf(status_msg + written, sizeof(status_msg) - written, " Bat:--");
   }
   sendToSerial1(String(status_msg), true);
 }
