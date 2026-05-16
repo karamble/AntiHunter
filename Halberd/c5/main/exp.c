@@ -249,15 +249,12 @@ void exp_init(void) {
              (int)s_exp_pins[0], (int)s_exp_pins[1], (int)s_exp_pins[2],
              (int)s_exp_pins[3], (int)s_exp_pins[4]);
 
-    // Boot-time I²C bus scan. Probes every 7-bit address and reports
-    // responders. Logs to the C5's USB Serial/JTAG console so an
-    // operator can see what's plugged into J_EXP / J_QWIIC without
-    // any S3 involvement. Results land in s_i2c_present so the sensor
-    // framework's manifest loader can skip probe attempts at empty
-    // addresses without re-scanning.
-    if (s_i2c_ready) {
-        exp_i2c_rescan();
-    }
+    // Boot-time I²C scan deliberately deferred: a stuck-low bus at
+    // exp_init time produces a wall of probe timeouts and on some
+    // configurations seems to wedge the IDF I²C master enough to
+    // cause a reboot loop. The sensor framework's load_manifest()
+    // calls exp_i2c_rescan() later (after the 2 s grace) with the
+    // bus typically settled, which is a safer moment.
 }
 
 bool exp_i2c_addr_present(uint8_t addr) {
