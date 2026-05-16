@@ -7,6 +7,8 @@ idf_component_register(
          "ble.c"
          "ieee802154.c"
          "exp.c"
+         "sensors.c"
+         "sensors_drv_register_read.c"
          "../../shared/link_codec.c"
     INCLUDE_DIRS "."
                  "../../shared"

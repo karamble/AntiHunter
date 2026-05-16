@@ -1,6 +1,7 @@
 #include "hardware.h"
 #include "c5_link.h"
 #include "network.h"
+#include "scanner.h"
 #include "baseline.h"
 #include "triangulation.h"
 #include <Arduino.h>
@@ -1067,6 +1068,9 @@ void initializeGPS() {
 
     gpsMutex = xSemaphoreCreateMutex();
     c5LinkInit();
+    // Install the SENSOR_EVENT callback so external-sensor frames the C5
+    // pushes after manifest load flow into the existing mesh-emit path.
+    c5LinkRegisterSensorEventCallback(onSensorEventFromLink);
 
     delay(500);
 

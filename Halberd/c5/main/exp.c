@@ -22,6 +22,11 @@ static const char *TAG = "exp";
 static i2c_master_bus_handle_t s_i2c_bus;
 static bool s_i2c_ready;
 
+// 128-bit bitmap of I²C addresses that ACKed during the most recent
+// scan. addr / 8 indexes the byte; addr % 8 indexes the bit. exp_init()
+// fills this from the boot-time scan; exp_i2c_rescan() refreshes it.
+static uint8_t s_i2c_present[16];
+
 // EXP_GPIO0..4 → ESP32-C5 GPIO numbers, per hardware.h.
 static const gpio_num_t s_exp_pins[LINK_EXP_GPIO_COUNT] = {
     HALBERD_C5_EXP_GPIO0,
@@ -240,19 +245,63 @@ void exp_init(void) {
     // Boot-time I²C bus scan. Probes every 7-bit address and reports
     // responders. Logs to the C5's USB Serial/JTAG console so an
     // operator can see what's plugged into J_EXP / J_QWIIC without
-    // any S3 involvement.
+    // any S3 involvement. Results land in s_i2c_present so the sensor
+    // framework's manifest loader can skip probe attempts at empty
+    // addresses without re-scanning.
     if (s_i2c_ready) {
-        int found = 0;
-        ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
-        for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-            if (i2c_master_probe(s_i2c_bus, addr, 50) == ESP_OK) {
-                const char *hint = "";
-                if (addr == 0x62) hint = " (Grove Vision AI V2 / WE-2)";
-                else if (addr == 0x28) hint = " (Grove Vision AI camera sensor?)";
-                ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
-                found++;
-            }
-        }
-        ESP_LOGI(TAG, "i2c scan: done, %d device(s)", found);
+        exp_i2c_rescan();
     }
+}
+
+bool exp_i2c_addr_present(uint8_t addr) {
+    if (addr > 0x7F) return false;
+    return (s_i2c_present[addr / 8] & (1u << (addr % 8))) != 0;
+}
+
+void exp_i2c_rescan(void) {
+    if (!s_i2c_ready) return;
+    memset(s_i2c_present, 0, sizeof(s_i2c_present));
+    int found = 0;
+    ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (i2c_master_probe(s_i2c_bus, addr, 50) == ESP_OK) {
+            s_i2c_present[addr / 8] |= (1u << (addr % 8));
+            const char *hint = "";
+            if (addr == 0x62) hint = " (Grove Vision AI V2 / WE-2)";
+            else if (addr == 0x28) hint = " (Grove Vision AI camera sensor?)";
+            ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
+            found++;
+        }
+    }
+    ESP_LOGI(TAG, "i2c scan: done, %d device(s)", found);
+}
+
+esp_err_t exp_i2c_xfer(uint8_t addr,
+                       const uint8_t *write_buf, size_t write_len,
+                       uint8_t *read_buf, size_t read_len) {
+    if (!s_i2c_ready) return ESP_ERR_INVALID_STATE;
+    if (write_len == 0 && read_len == 0) return ESP_ERR_INVALID_ARG;
+    if ((write_len > 0 && !write_buf) || (read_len > 0 && !read_buf)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    i2c_device_config_t devcfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = addr,
+        .scl_speed_hz    = EXP_I2C_FREQ_HZ,
+    };
+    i2c_master_dev_handle_t dev = NULL;
+    esp_err_t err = i2c_master_bus_add_device(s_i2c_bus, &devcfg, &dev);
+    if (err != ESP_OK) return err;
+
+    if (write_len > 0 && read_len > 0) {
+        err = i2c_master_transmit_receive(dev, write_buf, write_len,
+                                          read_buf, read_len,
+                                          EXP_I2C_TIMEOUT_MS);
+    } else if (write_len > 0) {
+        err = i2c_master_transmit(dev, write_buf, write_len, EXP_I2C_TIMEOUT_MS);
+    } else {
+        err = i2c_master_receive(dev, read_buf, read_len, EXP_I2C_TIMEOUT_MS);
+    }
+    i2c_master_bus_rm_device(dev);
+    return err;
 }
