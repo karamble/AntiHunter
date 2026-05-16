@@ -51,6 +51,11 @@ static volatile bool s_capture_responses;
 static volatile uint32_t s_diag_cb_total;
 static volatile uint32_t s_diag_cb_mgmt;
 static volatile uint32_t s_diag_cb_probe;
+// Per-band probe-frame counters: 2.4 GHz channels (1-14) and 5 GHz
+// channels (36+). Lets us verify the scan-driven sweep actually visits
+// 5 GHz, not just 2.4 GHz. Sum should equal s_diag_cb_probe.
+static volatile uint32_t s_diag_cb_probe_2g;
+static volatile uint32_t s_diag_cb_probe_5g;
 
 static uint32_t now_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
@@ -84,6 +89,8 @@ static void probe_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         return;
     }
     s_diag_cb_probe++;
+    if (pkt->rx_ctrl.channel >= 36) s_diag_cb_probe_5g++;
+    else                            s_diag_cb_probe_2g++;
 
     captured_probe_t cap;
     cap.rssi    = pkt->rx_ctrl.rssi;
@@ -180,6 +187,8 @@ static void wifi_sniff_task(void *arg) {
         s_diag_cb_total = 0;
         s_diag_cb_mgmt  = 0;
         s_diag_cb_probe = 0;
+        s_diag_cb_probe_2g = 0;
+        s_diag_cb_probe_5g = 0;
         s_sniff_busy = true;
 
         // Drain any pre-existing junk in the frame queue before arming.
@@ -282,9 +291,11 @@ static void wifi_sniff_task(void *arg) {
         link_send_wifi_probe_done(&done);
 
         ESP_LOGI(TAG, "sniff id=%" PRIu32 " done events=%u elapsed=%ums "
-                      "(cb total=%" PRIu32 " mgmt=%" PRIu32 " probe=%" PRIu32 ")",
+                      "(cb total=%" PRIu32 " mgmt=%" PRIu32 " probe=%" PRIu32
+                      " 2g=%" PRIu32 " 5g=%" PRIu32 ")",
                  req.scan_id, event_count, done.duration_ms,
-                 s_diag_cb_total, s_diag_cb_mgmt, s_diag_cb_probe);
+                 s_diag_cb_total, s_diag_cb_mgmt, s_diag_cb_probe,
+                 s_diag_cb_probe_2g, s_diag_cb_probe_5g);
     }
 }
 
