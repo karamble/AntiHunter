@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "exp.h"
 #include "link.h"
 #include "link_protocol.h"
 
@@ -230,9 +231,20 @@ static bool probe_addresses(struct sensor_slot *slot) {
     return false;
 }
 
+// Refresh the I²C scan bitmap right before probing manifest entries.
+// The boot-time scan in exp_init() runs ~T+0.5s after boot; smart I²C
+// peripherals like the Grove Vision AI V2 (WE-2) hold the bus while
+// they boot, so the early scan often comes back with 0 devices even
+// when they're physically present. A rescan here is the cheap fix —
+// also handles hot-plug across SLEEPING retries.
+static void load_manifest_rescan_i2c(void) {
+    exp_i2c_rescan();
+}
+
 // Walk the manifest's "sensors" array and fill s_slots. Returns the
 // number of slots successfully claimed.
 static uint8_t load_manifest(cJSON *root) {
+    load_manifest_rescan_i2c();
     cJSON *sensors = cJSON_GetObjectItemCaseSensitive(root, "sensors");
     if (!cJSON_IsArray(sensors)) {
         ESP_LOGE(TAG, "manifest has no \"sensors\" array");
@@ -395,12 +407,17 @@ static void poll_active_slots(void) {
 
 static void sensors_task(void *arg) {
     (void)arg;
-    // Brief grace so the link's first PING/PONG round-trip has completed
-    // before we start asking the S3 for files. Not strictly required —
-    // link_sd_stat blocks on its own response — but reduces boot log
-    // noise from spurious SLEEPING transitions if the S3 is slow to
-    // bring up the SD responder.
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    // Initial grace so:
+    //   1. The link's first PING/PONG round-trip has completed before
+    //      we start asking the S3 for files — reduces boot log noise
+    //      from spurious SLEEPING transitions if the S3 is slow.
+    //   2. Smart I²C peripherals (notably the Grove Vision AI V2 / WE-2)
+    //      have finished their own boot and released the bus. The
+    //      WE-2 holds SCL clock-stretched for several seconds during
+    //      its firmware load; until then every i2c_master_probe
+    //      against any address times out. 6 s is enough for the WE-2
+    //      to settle without making the boot UX feel laggy.
+    vTaskDelay(pdMS_TO_TICKS(6000));
 
     for (;;) {
         switch (s_state) {

@@ -153,10 +153,10 @@ static uint8_t crc8(const uint8_t *data, size_t len, uint8_t poly, uint8_t init)
 
 static bool probe(struct sensor_slot *slot) {
     if (slot->addr == 0) return false;
-    if (!exp_i2c_addr_present(slot->addr)) {
-        ESP_LOGD(TAG, "%s: addr 0x%02X absent in boot scan", slot->name, slot->addr);
-        return false;
-    }
+    // No exp_i2c_addr_present() short-circuit on purpose: the boot scan
+    // can miss late-booting smart peripherals. The probe op below has
+    // a timeout that surfaces real absences with no false negatives
+    // from a stale boot-scan bitmap.
 
     // Optional probe block: chip-ID register read or init command.
     const cJSON *probe_block = cJSON_GetObjectItemCaseSensitive(slot->manifest, "probe");
