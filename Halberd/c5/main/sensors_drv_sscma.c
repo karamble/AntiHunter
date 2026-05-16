@@ -246,10 +246,10 @@ static bool extract_one_event(struct sscma_state *st, struct link_sensor_event *
 
 static bool probe(struct sensor_slot *slot) {
     if (slot->addr == 0) return false;
-    // No exp_i2c_addr_present() short-circuit on purpose: the boot scan
-    // can miss late-booting smart peripherals (the WE-2 clock-stretches
-    // for several seconds during its own boot), and the real reset
-    // write below has a fast timeout that'll surface a genuine absence.
+    if (!exp_i2c_addr_present(slot->addr)) {
+        ESP_LOGD(TAG, "%s: addr 0x%02X absent in boot scan", slot->name, slot->addr);
+        return false;
+    }
 
     // Identify: write AT+ID?, wait, see if anything comes back.
     if (sscma_reset(slot->addr) != ESP_OK) {

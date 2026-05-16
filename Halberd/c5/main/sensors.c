@@ -231,20 +231,11 @@ static bool probe_addresses(struct sensor_slot *slot) {
     return false;
 }
 
-// Refresh the I²C scan bitmap right before probing manifest entries.
-// The boot-time scan in exp_init() runs ~T+0.5s after boot; smart I²C
-// peripherals like the Grove Vision AI V2 (WE-2) hold the bus while
-// they boot, so the early scan often comes back with 0 devices even
-// when they're physically present. A rescan here is the cheap fix —
-// also handles hot-plug across SLEEPING retries.
-static void load_manifest_rescan_i2c(void) {
-    exp_i2c_rescan();
-}
-
 // Walk the manifest's "sensors" array and fill s_slots. Returns the
-// number of slots successfully claimed.
+// number of slots successfully claimed. Rescans I²C first so the
+// boot-scan bitmap reflects any sensors hot-plugged after boot.
 static uint8_t load_manifest(cJSON *root) {
-    load_manifest_rescan_i2c();
+    exp_i2c_rescan();
     cJSON *sensors = cJSON_GetObjectItemCaseSensitive(root, "sensors");
     if (!cJSON_IsArray(sensors)) {
         ESP_LOGE(TAG, "manifest has no \"sensors\" array");
@@ -407,18 +398,11 @@ static void poll_active_slots(void) {
 
 static void sensors_task(void *arg) {
     (void)arg;
-    // Initial grace so:
-    //   1. The link's first PING/PONG round-trip has completed before
-    //      we start asking the S3 for files — reduces boot log noise
-    //      from spurious SLEEPING transitions if the S3 is slow.
-    //   2. Smart I²C peripherals (notably the Grove Vision AI V2 / WE-2)
-    //      have finished their own boot and released the bus. The
-    //      WE-2's firmware load is substantially longer than typical
-    //      Qwiic devices — bench observation shows >10 s before it
-    //      releases SCL and starts ACKing. 12 s gives comfortable
-    //      headroom without making the boot UX feel laggy; per-attempt
-    //      rescan below picks up devices that take even longer.
-    vTaskDelay(pdMS_TO_TICKS(12000));
+    // Brief grace so the link's first PING/PONG round-trip has completed
+    // before we start asking the S3 for files. Reduces boot log noise
+    // from spurious SLEEPING transitions if the S3 is slow to bring up
+    // the SD responder.
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     for (;;) {
         switch (s_state) {

@@ -6,7 +6,6 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -16,9 +15,9 @@
 
 static const char *TAG = "exp";
 
-#define EXP_I2C_FREQ_HZ       50000   // 50 kHz — derated from 100 k to forgive weak pull-ups on J_EXP raw wiring
+#define EXP_I2C_FREQ_HZ      100000   // 100 kHz, standard-mode Qwiic
 #define EXP_I2C_PORT         I2C_NUM_0
-#define EXP_I2C_TIMEOUT_MS   200      // per-transaction timeout, bumped for slow-rise tolerance
+#define EXP_I2C_TIMEOUT_MS   100      // per-transaction timeout
 
 static i2c_master_bus_handle_t s_i2c_bus;
 static bool s_i2c_ready;
@@ -213,13 +212,16 @@ static void on_gpio_req(const struct link_gpio_req *req) {
 }
 
 void exp_init(void) {
+    // v5 carrier has no on-board I²C pull-ups — relies on the
+    // plugged-in Qwiic module's own pulls (see hardware.h comment
+    // and feedback_c5_i2c_pullups memory). Internal pulls stay off.
     i2c_master_bus_config_t cfg = {0};
     cfg.i2c_port = EXP_I2C_PORT;
     cfg.sda_io_num = HALBERD_C5_EXP_SDA_GPIO;
     cfg.scl_io_num = HALBERD_C5_EXP_SCL_GPIO;
     cfg.clk_source = I2C_CLK_SRC_DEFAULT;
     cfg.glitch_ignore_cnt = 7;
-    cfg.flags.enable_internal_pullup = true;
+    cfg.flags.enable_internal_pullup = false;
 
     esp_err_t err = i2c_new_master_bus(&cfg, &s_i2c_bus);
     if (err != ESP_OK) {
@@ -238,15 +240,15 @@ void exp_init(void) {
              (int)s_exp_pins[0], (int)s_exp_pins[1], (int)s_exp_pins[2],
              (int)s_exp_pins[3], (int)s_exp_pins[4]);
 
-    // Boot-time I²C scan is intentionally NOT run here. Smart slaves
-    // like the Grove Vision AI V2 (WE-2) clock-stretch the bus while
-    // they boot their own firmware (>10 s observed), and probing
-    // immediately at exp_init time produces a wall of timeouts that
-    // can leave the IDF I²C master in a degraded state for subsequent
-    // ops. The sensor framework's load_manifest() calls
-    // exp_i2c_rescan() after a 12-second grace, which is the right
-    // moment to scan. Operators wanting an ad-hoc scan can call
-    // exp_i2c_rescan() from anywhere.
+    // Boot-time I²C bus scan. Probes every 7-bit address and reports
+    // responders. Logs to the C5's USB Serial/JTAG console so an
+    // operator can see what's plugged into J_EXP / J_QWIIC without
+    // any S3 involvement. Results land in s_i2c_present so the sensor
+    // framework's manifest loader can skip probe attempts at empty
+    // addresses without re-scanning.
+    if (s_i2c_ready) {
+        exp_i2c_rescan();
+    }
 }
 
 bool exp_i2c_addr_present(uint8_t addr) {
@@ -256,80 +258,6 @@ bool exp_i2c_addr_present(uint8_t addr) {
 
 void exp_i2c_rescan(void) {
     if (!s_i2c_ready) return;
-
-    // Manual stuck-slave recovery before scanning: bit-bang 9 SCL
-    // pulses + a STOP condition. i2c_master_bus_reset() exists but
-    // doesn't actually do anything on this target — it logs
-    // "GPIO 7/23 not usable" and returns OK without releasing the
-    // bus, because the I²C peripheral still owns the pins.
-    //
-    // We take the pins back temporarily, drive them as open-drain
-    // outputs, walk through the recovery sequence, then hand them
-    // back to the peripheral. After this, also sample the idle
-    // levels — if SDA or SCL still read low, the wiring or slave
-    // is shorting the line and no software will fix it.
-
-    const gpio_num_t sda = HALBERD_C5_EXP_SDA_GPIO;
-    const gpio_num_t scl = HALBERD_C5_EXP_SCL_GPIO;
-
-    gpio_config_t io = {0};
-    io.intr_type    = GPIO_INTR_DISABLE;
-    io.mode         = GPIO_MODE_INPUT_OUTPUT_OD;
-    io.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
-    io.pull_up_en   = GPIO_PULLUP_ENABLE;
-    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io);
-
-    // Release lines (open-drain high)
-    gpio_set_level(sda, 1);
-    gpio_set_level(scl, 1);
-    esp_rom_delay_us(10);
-
-    // 9 SCL pulses to flush a slave stuck mid-byte
-    for (int i = 0; i < 9; i++) {
-        gpio_set_level(scl, 0);
-        esp_rom_delay_us(10);
-        gpio_set_level(scl, 1);
-        esp_rom_delay_us(10);
-    }
-
-    // STOP condition: SDA low → high while SCL high
-    gpio_set_level(sda, 0);
-    esp_rom_delay_us(10);
-    gpio_set_level(scl, 1);
-    esp_rom_delay_us(10);
-    gpio_set_level(sda, 1);
-    esp_rom_delay_us(10);
-
-    // Sample idle levels — diagnostic
-    int sda_lvl = gpio_get_level(sda);
-    int scl_lvl = gpio_get_level(scl);
-    ESP_LOGI(TAG, "i2c idle after recovery: SDA=%d SCL=%d (both 1 = bus free)",
-             sda_lvl, scl_lvl);
-
-    // Bail early if a line is still held low — the scan would just
-    // produce 5+ seconds of timeouts on every address and we'd loop
-    // back here every 30 s with no useful change. The cause is
-    // physical (wiring short to GND, broken slave, etc.) and needs
-    // operator attention. Clear an empty bitmap so subsequent
-    // exp_i2c_addr_present() calls return false consistently.
-    if (sda_lvl == 0 || scl_lvl == 0) {
-        ESP_LOGE(TAG, "i2c bus held low (SDA=%d SCL=%d) — skipping scan. "
-                      "Check wiring: SCL should reach GPIO%d (silk D4), "
-                      "SDA should reach GPIO%d (silk D3), neither tied "
-                      "to GND.",
-                 sda_lvl, scl_lvl,
-                 HALBERD_C5_EXP_SCL_GPIO, HALBERD_C5_EXP_SDA_GPIO);
-        memset(s_i2c_present, 0, sizeof(s_i2c_present));
-        return;
-    }
-
-    // Hand the pins back to the I²C peripheral by re-attaching them
-    // to the master bus via the IDF setpins API. With current IDF the
-    // simpler path is just to let the next add_device + transmit
-    // re-route the IO matrix; the peripheral re-claims SDA/SCL on
-    // every transaction.
-
     memset(s_i2c_present, 0, sizeof(s_i2c_present));
     int found = 0;
     ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
