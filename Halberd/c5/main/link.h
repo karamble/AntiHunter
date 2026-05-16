@@ -7,6 +7,8 @@
 // It also fires a PING every 5 s so the link is visibly heartbeating on
 // the wire even when nothing else is happening.
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
