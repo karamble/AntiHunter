@@ -376,5 +376,5 @@ void ieee802154_init(void) {
     xTaskCreate(ieee_scan_task, "ieee_scan", IEEE_SCAN_TASK_STACK,
                 NULL, IEEE_SCAN_TASK_PRIORITY, NULL);
 
-    ESP_LOGI(TAG, "init promiscuous RX, ch 11-26");
+    ESP_LOGI(TAG, "init queues + task, radio on-demand");
 }

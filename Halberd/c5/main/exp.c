@@ -207,9 +207,11 @@ static void on_gpio_req(const struct link_gpio_req *req) {
 }
 
 void exp_init(void) {
-    // The expansion I²C bus already has 4.7 kΩ pull-ups on the carrier
-    // (R1/R2), so we leave internal pull-ups off. Any Qwiic device that
-    // also pulls up will parallel into ~3.2 kΩ — still within spec.
+    // v5 carrier has NO I²C pull-ups (see feedback_c5_i2c_pullups);
+    // we rely on the plugged-in Qwiic / STEMMA QT module's onboard
+    // pulls. Internal pull-ups stay off for the same reason
+    // (typical module pulls are 4.7-10 kΩ; doubling with our internal
+    // ~45 kΩ wouldn't help but isn't necessary either).
     i2c_master_bus_config_t cfg = {0};
     cfg.i2c_port = EXP_I2C_PORT;
     cfg.sda_io_num = HALBERD_C5_EXP_SDA_GPIO;
@@ -234,4 +236,24 @@ void exp_init(void) {
              HALBERD_C5_EXP_SDA_GPIO, HALBERD_C5_EXP_SCL_GPIO, EXP_I2C_FREQ_HZ,
              (int)s_exp_pins[0], (int)s_exp_pins[1], (int)s_exp_pins[2],
              (int)s_exp_pins[3], (int)s_exp_pins[4]);
+
+    // Boot-time I²C bus scan. Probes every 7-bit address and reports
+    // responders. Logs to the C5's USB Serial/JTAG console so an
+    // operator can see what's plugged into J_EXP / J_QWIIC without
+    // any S3 involvement. Bench-only diagnostic during stage 7
+    // bring-up; harmless to leave in (one log line of output, ~3 s).
+    if (s_i2c_ready) {
+        int found = 0;
+        ESP_LOGI(TAG, "i2c scan: probing 0x08..0x77 ...");
+        for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+            esp_err_t probe = i2c_master_probe(s_i2c_bus, addr, 50);
+            if (probe == ESP_OK) {
+                const char *hint = "";
+                if (addr == 0x62) hint = " (Grove Vision AI V2 candidate)";
+                ESP_LOGI(TAG, "i2c scan: found 0x%02X%s", addr, hint);
+                found++;
+            }
+        }
+        ESP_LOGI(TAG, "i2c scan: done, %d device(s)", found);
+    }
 }
