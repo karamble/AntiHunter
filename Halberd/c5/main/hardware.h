@@ -24,7 +24,11 @@
 #define HALBERD_C5_GPS_UART_NUM    1
 #define HALBERD_C5_GPS_BAUD        9600
 
-// ── Expansion I²C bus (Qwiic + J_EXP, 4.7k pull-ups on the carrier) ────────
+// ── Expansion I²C bus (Qwiic + J_EXP, NO pull-ups on the carrier) ────────
+// Carrier intentionally omits SDA/SCL pull-ups — relies on the plugged-in
+// Qwiic module's own pulls when present. exp.c enables the C5's internal
+// ~45 kΩ pulls as a fallback for J_EXP raw-wire setups where no Qwiic
+// module is on the bus to supply them.
 #define HALBERD_C5_EXP_SDA_GPIO    7   // D3
 #define HALBERD_C5_EXP_SCL_GPIO    23  // D4
 
