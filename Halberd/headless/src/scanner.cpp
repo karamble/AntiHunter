@@ -3235,6 +3235,12 @@ static void sendProbeHitMesh(const uint8_t *mac, int8_t rssi, uint8_t channel,
 
     String key = String(macStr);
     if (ssid && ssid[0]) key += String(ssid);
+    // Dedup per band, not across bands. The 60 s cooldown gates one
+    // emit per MAC+SSID per band — so a phone probing for "Foo" on
+    // both 2.4 GHz and 5 GHz produces two PROBE_HIT lines (one with
+    // a 2.4 GHz channel, one with a 5 GHz channel) instead of having
+    // the second band suppressed by the first band's cooldown entry.
+    key += (channel >= 36 ? ":5" : ":2");
     if (!shouldSendProbeHit(key)) return;
 
     String msg = getNodeId() + ": PROBE_HIT " + String(macStr) + " ";
