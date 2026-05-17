@@ -2096,14 +2096,17 @@ void sendBatterySaverHeartbeat() {
         heartbeat += " GPS:N/A";
     }
 
-    // Refresh + append live battery reading when the UPS is present.
-    // The SAVER tag is retained so the operator can still tell this came
-    // from the battery-saver path (vs the regular STATUS handler).
+    // Percent leads so diginode-cc's `Batt[:=]\d+%?` HEARTBEAT regex captures
+    // it. Voltage + CHG/DIS + SAVER tag trail as informational residue.
     if (inaAvailable) {
         readINA219();
-        heartbeat += " Bat:" + getBatteryStatusString() + " SAVER";
+        char bat[48];
+        snprintf(bat, sizeof(bat), " Batt:%d%% %.2fV %s SAVER",
+                 (int)inaLastPct, inaLastVoltage,
+                 inaLastCharging ? "CHG" : "DIS");
+        heartbeat += bat;
     } else {
-        heartbeat += " Battery:SAVER";
+        heartbeat += " Batt:-- SAVER";
     }
 
     sendToSerial1(heartbeat, true);

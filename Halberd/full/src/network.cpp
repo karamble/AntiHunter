@@ -6481,12 +6481,16 @@ static void handleStatus(const String &command)
   // Refresh + append battery line. Cheap (~3 ms over the 100 kHz bus); the
   // INA219 is on the same I²C wire as the DS3231 so reads serialise via
   // rtcMutex inside readINA219().
+  // Percent leads so diginode-cc's `Batt[:=]\d+%?` STATUS regex captures it.
+  // Voltage + CHG/DIS trail as informational residue the regex ignores.
   if (inaAvailable && written > 0 && written <= (int)sizeof(status_msg) - 1) {
       readINA219();
       snprintf(status_msg + written, sizeof(status_msg) - written,
-               " Bat:%s", getBatteryStatusString().c_str());
+               " Batt:%d%% %.2fV %s",
+               (int)inaLastPct, inaLastVoltage,
+               inaLastCharging ? "CHG" : "DIS");
   } else if (written > 0 && written <= (int)sizeof(status_msg) - 1) {
-      snprintf(status_msg + written, sizeof(status_msg) - written, " Bat:--");
+      snprintf(status_msg + written, sizeof(status_msg) - written, " Batt:--");
   }
   sendToSerial1(String(status_msg), true);
 }
