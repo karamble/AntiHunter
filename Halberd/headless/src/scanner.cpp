@@ -1629,8 +1629,6 @@ void snifferScanTask(void *pv)
 
                 if (transmittedDevices.find(macStr) == transmittedDevices.end())
                 {
-                    String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
-
                     int8_t bestRssi = -128;
                     for (const auto& hit : hitsLog) {
                         String hitMac = macFmt6(hit.mac);
@@ -1639,37 +1637,32 @@ void snifferScanTask(void *pv)
                         }
                     }
 
-                    deviceMsg += String(bestRssi);
-                    if (name.length() > 0 && name != "Unknown") {
-                        deviceMsg += " N:" + name.substring(0, 30);
-                    }
+                    // When rawBleMode is on, send only the B: frame. The raw
+                    // advertisement already carries every field D: would have
+                    // (MAC, RSSI, local name AD, manufacturer data, service
+                    // UUIDs). Suppressing the redundant D: halves LoRa airtime
+                    // for BLE during device scans. The C2-side textparser
+                    // parses the local name out of the base64 payload so
+                    // inventory rows still get names.
+                    if (!rawBleMode) {
+                        String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
+                        deviceMsg += String(bestRssi);
+                        if (name.length() > 0 && name != "Unknown") {
+                            deviceMsg += " N:" + name.substring(0, 30);
+                        }
 
-                    if (deviceMsg.length() <= MAX_MESH_SIZE) {
-                        if (sendToSerial1(deviceMsg, true)) {
-                            transmittedDevices.insert(macStr);
-                            sentThisCycle++;
-
-                            // Refill tokens periodically to maintain throughput
-                            if (sentThisCycle % 3 == 0) {
-                                rateLimiter.refillTokens();
+                        if (deviceMsg.length() <= MAX_MESH_SIZE) {
+                            if (sendToSerial1(deviceMsg, true)) {
+                                transmittedDevices.insert(macStr);
+                                sentThisCycle++;
+                                if (sentThisCycle % 3 == 0) {
+                                    rateLimiter.refillTokens();
+                                }
+                                vTaskDelay(MESH_TX_PACING_MS);
                             }
-                            vTaskDelay(MESH_TX_PACING_MS);
                         }
                     }
 
-                    // Emit B: (raw advertisement) alongside D: when raw mode
-                    // is on. The C2-side classifier reparses the AD structures
-                    // from the base64 payload. Channel field omitted (always 0
-                    // in current capture path); the diginode-cc parser
-                    // defaults it.
-                    //
-                    // Slot guard removed: the outer for-loop's top
-                    // canSendInSlot+break pair already gates entry to a slot,
-                    // and the 3000ms MESH_TX_PACING_MS plus the rateLimiter
-                    // token bucket are the actual flow control. Re-checking
-                    // canSendInSlot here was rejecting B: emits because the
-                    // pacing delay between D: and B: pushed past the slot
-                    // guard, dropping the raw frame entirely.
                     if (rawBleMode) {
                         auto rawIt = bleRawCache.find(macStr);
                         if (rawIt != bleRawCache.end() && !rawIt->second.empty()) {
@@ -1678,6 +1671,12 @@ void snifferScanTask(void *pv)
                                             base64Encode(rawIt->second.data(), rawIt->second.size());
                             if (rawMsg.length() <= MAX_MESH_SIZE) {
                                 if (sendToSerial1(rawMsg, true)) {
+                                    // Mark the MAC sent so the next periodic
+                                    // tick doesn't re-fire B: for the same
+                                    // advertisement. Previously the D: send
+                                    // owned this insert; with D: suppressed in
+                                    // raw mode the B: path has to do it.
+                                    transmittedDevices.insert(macStr);
                                     sentThisCycle++;
                                     if (sentThisCycle % 3 == 0) {
                                         rateLimiter.refillTokens();
@@ -1952,7 +1951,6 @@ void snifferScanTask(void *pv)
             if (transmittedDevices.find(entry.first) == transmittedDevices.end())
             {
                 String macStr = entry.first;
-                String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
                 int8_t bestRssi = -128;
                 for (const auto& hit : hitsLog) {
                     String hitMac = macFmt6(hit.mac);
@@ -1960,31 +1958,24 @@ void snifferScanTask(void *pv)
                         bestRssi = hit.rssi;
                     }
                 }
-                deviceMsg += String(bestRssi);
-                if (entry.second.length() > 0 && entry.second != "Unknown") {
-                    deviceMsg += " N:" + entry.second.substring(0, 30);
-                }
-                if (deviceMsg.length() <= MAX_MESH_SIZE) {
-                    if (sendToSerial1(deviceMsg, true)) {
-                        transmittedDevices.insert(macStr);
-                        vTaskDelay(MESH_TX_PACING_MS);
+
+                // Final-batch mirror of the periodic-loop logic: raw mode
+                // suppresses the redundant D: BLE frame so each MAC sends one
+                // mesh frame per scan instead of two.
+                if (!rawBleMode) {
+                    String deviceMsg = getNodeId() + ": D:" + macStr + " B ";
+                    deviceMsg += String(bestRssi);
+                    if (entry.second.length() > 0 && entry.second != "Unknown") {
+                        deviceMsg += " N:" + entry.second.substring(0, 30);
+                    }
+                    if (deviceMsg.length() <= MAX_MESH_SIZE) {
+                        if (sendToSerial1(deviceMsg, true)) {
+                            transmittedDevices.insert(macStr);
+                            vTaskDelay(MESH_TX_PACING_MS);
+                        }
                     }
                 }
 
-                // Emit B: alongside D: in the final-batch flush too. Without
-                // this block, BLE devices that get drained only after the
-                // scan window ends never produce a raw-advertisement frame
-                // even when rawBleMode is on, because the periodic loop's
-                // B: emit doesn't see them.
-                //
-                // Slot guard removed for the B: emit — the for-loop's top
-                // canSendInSlot/waitForSlot pair already gates entry to a
-                // slot, and the 3000ms MESH_TX_PACING_MS between consecutive
-                // sendToSerial1 calls plus the rateLimiter token bucket
-                // handle flow control. Re-checking canSendInSlot after the
-                // pacing delay was rejecting B: emits because the delay
-                // pushed past the slot guard, dropping the raw frame
-                // entirely.
                 if (rawBleMode) {
                     auto rawIt = bleRawCache.find(macStr);
                     if (rawIt != bleRawCache.end() && !rawIt->second.empty()) {
@@ -1993,6 +1984,7 @@ void snifferScanTask(void *pv)
                                         base64Encode(rawIt->second.data(), rawIt->second.size());
                         if (rawMsg.length() <= MAX_MESH_SIZE) {
                             if (sendToSerial1(rawMsg, true)) {
+                                transmittedDevices.insert(macStr);
                                 vTaskDelay(MESH_TX_PACING_MS);
                             }
                         }
