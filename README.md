@@ -301,9 +301,6 @@ Nodes function independently and coordinate via Meshtastic mesh networking.
 
 <img width="2241" height="2358" alt="image" src="https://github.com/user-attachments/assets/426c4693-3dc1-49f0-9a6c-ccd2bb3a758e" />
 
- 
-- Illustrated [assembly manual](https://github.com/karamble/halberd/blob/main/hw/Prototype_STL_Files/Halberd-AssemblyManual.pdf)
-
 ### Core Components
 
 - **Seeed XIAO ESP32-S3** (minimum 8MB flash)
@@ -346,8 +343,7 @@ POWER & THERMAL
 
 ENCLOSURE
 - 1x Weatherproof Enclosure (3D printable)
-  - STL files: [hw folder](https://github.com/karamble/halberd/tree/main/hw/Prototype_STL_Files)
-- Assembly manual: [PDF](https://github.com/karamble/halberd/blob/main/hw/Prototype_STL_Files/Halberd-AssemblyManual.pdf)
+  - STL files: [hw/case](https://github.com/karamble/halberd/tree/main/hw/case)
 
 </details>
 

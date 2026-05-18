@@ -152,7 +152,7 @@ halberd/
 ├── hw/              # hardware
 │   ├── pcb/         # KiCad project — gitignored, lives in user's env
 │   │   └── docs/    # design notes (gitignored)
-│   └── Prototype_STL_Files/
+│   └── case/
 ├── scripts/         # flash-heltec-meshtastic.sh, set_rtc_time.py
 ├── Makefile         # top-level orchestrator (S3 + C5 + Heltec)
 ├── platformio.ini   # halberd-full and halberd-headless envs
