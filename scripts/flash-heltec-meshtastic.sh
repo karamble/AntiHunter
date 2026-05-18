@@ -49,10 +49,14 @@ ADDR_LITTLEFS="0x670000"
 
 # ── halberd defaults ─────────────────────────────────────────────────────────
 # Wiring on a Halberd unit: the XIAO ESP32-S3 talks to the Heltec via UART.
-# The Heltec exposes its serial module on these GPIOs:
-#   SERIAL_RXD=19, SERIAL_TXD=20  (matches the XIAO hardware spec)
-SERIAL_RXD=19
-SERIAL_TXD=20
+# The diginode-v5 PCB names its UART nets MESH_TX and MESH_RX from each
+# side's *own* perspective, so MESH_TX wires S3 GPIO5 (out) to Heltec
+# GPIO20, and MESH_RX wires S3 GPIO4 (in) to Heltec GPIO19. To turn that
+# into a working crossover we swap the Heltec's serial module: it must
+# receive on GPIO20 (the wire S3 is driving) and transmit on GPIO19 (the
+# wire S3 is listening to).
+SERIAL_RXD=20
+SERIAL_TXD=19
 SERIAL_BAUD_NAME="BAUD_115200"
 SERIAL_BAUD_ENUM=11
 
@@ -279,7 +283,9 @@ if ! $FLASH_ONLY && ! $CONFIRM_CONFIG; then
     # debug console, which is what local config tools (this script,
     # `meshtastic --port` queries, etc.) talk to. The XIAO ESP32-S3 is
     # wired to the Heltec on GPIO19/20 and exchanges TEXTMSG over those
-    # pins, fully independent of the USB console.
+    # pins, fully independent of the USB console. The rxd/txd values
+    # below intentionally counter-rotate the PCB net names — see the
+    # SERIAL_RXD/SERIAL_TXD comment near the top of this script.
     mesh_cmd "Configure serial module (TEXTMSG, baud $SERIAL_BAUD_NAME, rxd=$SERIAL_RXD txd=$SERIAL_TXD)" \
         --set serial.enabled true \
         --set serial.echo false \
